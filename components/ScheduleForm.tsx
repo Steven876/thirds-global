@@ -21,7 +21,8 @@ interface ScheduleData {
   start_time: string;
   end_time: string;
   energy: EnergyLevel;
-  task: string;
+  task: string; 
+  
   notes: string;
   recurring_days: string[];
 }

@@ -152,14 +152,6 @@ export default function HomePage() {
             className="lg:col-span-6"
           >
             <div className="bg-white/80 backdrop-blur-sm rounded-2xl shadow-sm border border-white/20 p-8">
-              <div className="text-center mb-8">
-                <h2 className="text-2xl font-semibold text-gray-900 mb-2">
-                  Current Task
-                </h2>
-                <p className="text-gray-600">
-                  {currentTask}
-                </p>
-              </div>
 
               <CircularTimer
                 currentTask={currentTask}
@@ -199,18 +191,6 @@ export default function HomePage() {
           transition={{ duration: 0.6, delay: 0.8 }}
           className="mt-8 grid grid-cols-1 md:grid-cols-3 gap-6"
         >
-          <div className="bg-white/80 backdrop-blur-sm rounded-2xl shadow-sm border border-white/20 p-6 text-center">
-            <div className="text-2xl font-bold text-gray-900 mb-1">4h 32m</div>
-            <div className="text-sm text-gray-600">Total Focus Today</div>
-          </div>
-          <div className="bg-white/80 backdrop-blur-sm rounded-2xl shadow-sm border border-white/20 p-6 text-center">
-            <div className="text-2xl font-bold text-gray-900 mb-1">12</div>
-            <div className="text-sm text-gray-600">Sessions Completed</div>
-          </div>
-          <div className="bg-white/80 backdrop-blur-sm rounded-2xl shadow-sm border border-white/20 p-6 text-center">
-            <div className="text-2xl font-bold text-gray-900 mb-1">87%</div>
-            <div className="text-sm text-gray-600">Focus Rate</div>
-          </div>
         </motion.div>
       </main>
 
