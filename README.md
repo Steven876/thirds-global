@@ -180,6 +180,15 @@ If you encounter any issues or have questions:
 - Animations by [Framer Motion](https://www.framer.com/motion/)
 - Icons by [Lucide React](https://lucide.dev/)
 
+## 🙏 Developers' Notes
+
+With further development we'd like to:
+- change the name of the app to Pulse, Rhythm, or another name that aligns with the core functionality.
+- allow users to add more or less than 3 energy blocks.
+- integrate music or white noise to enhance the user experience.
+- include a checker/ validation to ensure the sum of durations of tasks within each block does not exceed the duration of the block itself.
+
 ---
 
 **Thirds** - Structure your day around your energy. ⚡
+Steven Armstrong (@Steven876), Kenrick Brown (@), Iyana Taylor (@iyanataylor1), Zaina Thompson (@newUserZaina)
