@@ -132,17 +132,53 @@ export async function POST(request: NextRequest) {
       .limit(1)
       .maybeSingle();
 
+    // Fetch current other blocks
+    const { data: others } = await supabase
+      .from('session_templates')
+      .select('id, energy_type, start_time, end_time')
+      .eq('user_id', user.id);
+
+    // Helper to minutes
+    const toMin = (t: string) => { const [h,m] = t.split(':').map(Number); return h*60+m; };
+    const fromMin = (m: number) => `${String(Math.floor((m+1440)%1440/60)).padStart(2,'0')}:${String((m+1440)%60).padStart(2,'0')}`;
+
+    // Desired High window
+    let hS = toMin(target.start);
+    let hE = toMin(target.end);
+    if (hE <= hS) hE = hS + 60; // enforce at least 1h
+
+    // Adjust others to avoid overlaps (simple linear ordering High->Medium->Low)
+    const medium = others?.find((o:any)=> o.energy_type==='Medium');
+    const low = others?.find((o:any)=> o.energy_type==='Low');
+
+    // Write High first
     if (existing?.id) {
-      const { error: updErr } = await supabase
-        .from('session_templates')
-        .update({ start_time: target.start, end_time: target.end })
-        .eq('id', existing.id);
+      const { error: updErr } = await supabase.from('session_templates').update({ start_time: fromMin(hS), end_time: fromMin(hE) }).eq('id', existing.id);
       if (updErr) throw updErr;
     } else {
-      const { error: insErr } = await supabase
-        .from('session_templates')
-        .insert({ user_id: user.id, energy_type: 'High', start_time: target.start, end_time: target.end });
+      const { error: insErr } = await supabase.from('session_templates').insert({ user_id: user.id, energy_type: 'High', start_time: fromMin(hS), end_time: fromMin(hE) });
       if (insErr) throw insErr;
+    }
+
+    // Clamp Medium after High
+    if (medium) {
+      let mS = toMin(medium.start_time);
+      let mE = toMin(medium.end_time);
+      if (mS < hE) { mS = hE; }
+      if (mE <= mS) mE = mS + 60;
+      const { error } = await supabase.from('session_templates').update({ start_time: fromMin(mS), end_time: fromMin(mE) }).eq('id', medium.id);
+      if (error) throw error;
+    }
+
+    // Clamp Low after Medium/High
+    if (low) {
+      const midRef = medium ? toMin(medium.end_time) : hE;
+      let lS = toMin(low.start_time);
+      let lE = toMin(low.end_time);
+      if (lS < midRef) { lS = midRef; }
+      if (lE <= lS) lE = lS + 60;
+      const { error } = await supabase.from('session_templates').update({ start_time: fromMin(lS), end_time: fromMin(lE) }).eq('id', low.id);
+      if (error) throw error;
     }
 
     return NextResponse.json({ ok: true });

@@ -39,6 +39,7 @@ export default function HomePage() {
   const [lastBlockEndMinutesState, setLastBlockEndMinutesState] = useState<number | null>(null);
   const [currentBlockRange, setCurrentBlockRange] = useState<string | null>(null);
   const [currentEnergyLabel, setCurrentEnergyLabel] = useState<'High'|'Medium'|'Low' | null>(null);
+  const [activeEndMinutes, setActiveEndMinutes] = useState<number | null>(null);
   const [motivation, setMotivation] = useState<string | null>(null);
   const [energyTheme, setEnergyTheme] = useState<string | null>(null);
   const playClickTimer = useRef<number | null>(null);
@@ -102,6 +103,19 @@ export default function HomePage() {
     load();
   }, []);
 
+  // Helper: figure out active session by local device time
+  const computeActiveSession = (sessions: any[]): { session: any | null; startMin: number | null; endMin: number | null } => {
+    const toMin = (t:string) => { const [h,m] = t.split(':').map(Number); return h*60+m; };
+    const now = new Date();
+    const nowMin = now.getHours()*60 + now.getMinutes();
+    for (const s of sessions) {
+      const st = toMin((s.template?.start_time as string) || '00:00');
+      const en = toMin((s.template?.end_time as string) || '00:00');
+      if (st <= nowMin && nowMin < en) return { session: s, startMin: st, endMin: en };
+    }
+    return { session: null, startMin: null, endMin: null };
+  };
+
   // Load today's schedule (joined select) and pick the current block's tasks
   useEffect(() => {
     const loadTasks = async () => {
@@ -127,27 +141,19 @@ export default function HomePage() {
         const toMin = (t:string) => { const [h,m] = t.split(':').map(Number); return h*60+m; };
         const endMins = (schedule.sessions as any[]).map((s:any)=> toMin((s.template?.end_time as string) || '0:0')).filter((n:number)=>!Number.isNaN(n));
         if (endMins.length) setLastBlockEndMinutesState(Math.max(...endMins));
-        // Determine if current time sits in any block
-        const now = new Date();
-        const nowMin = now.getHours()*60 + now.getMinutes();
-        const blocks = (schedule.sessions as any[]).map((s:any)=>({
-          s: toMin((s.template?.start_time as string)||'00:00'),
-          e: toMin((s.template?.end_time as string)||'00:00')
-        }));
-        const inAny = blocks.some(b => b.s <= b.e ? (nowMin >= b.s && nowMin < b.e) : (nowMin >= b.s || nowMin < b.e));
-        setIsOutsideBlock(!inAny);
-        const wantedEnergy = currentBlock === 'morning' ? 'High' : currentBlock === 'afternoon' ? 'Medium' : 'Low';
-        const target = (schedule.sessions as any[]).find((s:any)=> (s.template?.energy_type as string) === wantedEnergy);
-        if (!target) { setTasks([]); return; }
-        setCurrentBlockRange(formatRange(((target.template?.start_time as string)||'00:00').slice(0,5), ((target.template?.end_time as string)||'00:00').slice(0,5)));
-        setCurrentEnergyLabel((target.template?.energy_type as any) || null);
-        const dbTasks = (target.tasks as any[]) || [];
+        const { session: active, startMin, endMin } = computeActiveSession(schedule.sessions as any[]);
+        setIsOutsideBlock(!active);
+        if (!active || !endMin) { setTasks([]); setActiveEndMinutes(null); return; }
+        setActiveEndMinutes(endMin);
+        setCurrentBlockRange(formatRange(((active.template?.start_time as string)||'00:00').slice(0,5), ((active.template?.end_time as string)||'00:00').slice(0,5)));
+        setCurrentEnergyLabel((active.template?.energy_type as any) || null);
+        const dbTasks = (active.tasks as any[]) || [];
         const energyMap = { High: 'high', Medium: 'medium', Low: 'low' } as const;
         const mapped: TaskItem[] = (dbTasks||[]).map((t:any) => ({
           id: t.id,
           label: t.name,
-          range: currentBlockRange || '',
-          energy: energyMap[((target.template?.energy_type as string) || 'Low') as 'High'|'Medium'|'Low'],
+          range: formatRange(((active.template?.start_time as string)||'00:00').slice(0,5), ((active.template?.end_time as string)||'00:00').slice(0,5)),
+          energy: energyMap[((active.template?.energy_type as string) || 'Low') as 'High'|'Medium'|'Low'],
           done: t.status === 'completed',
           status: t.status
         }));
@@ -162,6 +168,12 @@ export default function HomePage() {
           setEnergyTheme(getEnergyThemeForNow(templates));
         } catch { setEnergyTheme(null); }
         setCurrentTaskIndex(0);
+        // Initialize timer remaining based on local time and active end
+        const now2 = new Date();
+        const nowSec = now2.getHours()*3600 + now2.getMinutes()*60 + now2.getSeconds();
+        const rem = Math.max(0, endMin*60 - nowSec);
+        setTimeRemaining(rem);
+        setIsTimerFrozen(false);
       } catch (e) {
         console.error('Failed to load tasks', e);
         setTasks([]);
@@ -195,19 +207,18 @@ export default function HomePage() {
     }
 
     const tick = () => {
+      setTimeRemaining(prev => (prev <= 0 ? 0 : prev - 1));
       const nowMin = getNowMinutes();
-      const endMin = getBlockEndMinutes(currentBlock);
-      if (nowMin >= endMin || nowMin >= lastBlockEndMinutes) {
+      const endMin = activeEndMinutes ?? getBlockEndMinutes(currentBlock);
+      if ((endMin && nowMin >= endMin) || (lastBlockEndMinutes && nowMin >= lastBlockEndMinutes)) {
         setTimeRemaining(0);
         setIsTimerFrozen(true);
-        return;
       }
-      setTimeRemaining(prev => (prev <= 0 ? 0 : prev - 1));
     };
 
     const timer = setInterval(tick, 1000);
     return () => clearInterval(timer);
-  }, [currentBlock, isTimerFrozen, isPaused, allTasksDone, isAfterLastBlockEnd, isOutsideBlock]);
+  }, [currentBlock, isTimerFrozen, isPaused, allTasksDone, isAfterLastBlockEnd, isOutsideBlock, activeEndMinutes, lastBlockEndMinutes]);
 
   const handleTaskComplete = () => {
     setTimeRemaining(25 * 60); // Reset timer
@@ -333,10 +344,10 @@ export default function HomePage() {
         </motion.div>
 
         {/* Centered Timer Section */}
-        <motion.div
+          <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.6, delay: 0.2 }}
+            transition={{ duration: 0.6, delay: 0.2 }}
           className="flex flex-col items-center justify-center"
         >
           {/* Current Task above */}
@@ -349,19 +360,19 @@ export default function HomePage() {
 
           {/* Timer (no white background) */}
           <div className="rounded-full">
-            <CircularTimer
-              currentTask={currentTask}
-              timeRemainingSec={timeRemaining}
-              energyLevel={energyLevel}
-              onComplete={handleTaskComplete}
-            />
+              <CircularTimer
+                currentTask={currentTask}
+                timeRemainingSec={timeRemaining}
+                energyLevel={energyLevel}
+                onComplete={handleTaskComplete}
+              />
           </div>
 
           {/* Next Task below */}
           <div className="text-center mt-6">
             <div className={`text-xs ${textColors.secondary}`}>Next</div>
             <div className={`text-lg font-medium ${textColors.primary}`}>{displayNextTask}</div>
-          </div>
+              </div>
 
           {/* Controls: Pause / Skip / Continue (icons) */}
           <div className="mt-8 flex items-center gap-6">
@@ -374,8 +385,8 @@ export default function HomePage() {
             <button onClick={handleComplete} disabled={controlsDisabled} className="h-12 w-12 rounded-full bg-black text-white shadow-md flex items-center justify-center hover:bg-black/90 disabled:opacity-50 disabled:cursor-not-allowed" aria-label="Complete and next task">
               <ArrowRight className="h-5 w-5" />
             </button>
-          </div>
-        </motion.div>
+            </div>
+          </motion.div>
 
         {/* Hidden task list for now; can add below if needed */}
       </main>
@@ -418,9 +429,9 @@ export default function HomePage() {
               ))}
             </ul>
           </div>
-          <AIWidget />
+            <AIWidget />
         </div>
-      </div>
+        </div>
 
       {/* Floating menu button to open insights (Home only) */}
       {!insightsOpen && (

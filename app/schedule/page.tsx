@@ -141,12 +141,22 @@ export default function SchedulePage() {
     tasks: { id: number; name: string; description: string | null; duration_minutes: number | null; status: 'active' | 'completed' | 'skipped' }[];
   }[] | undefined>(undefined);
   const [editingTaskId, setEditingTaskId] = useState<number | null>(null);
+  const [deletePromptTaskId, setDeletePromptTaskId] = useState<number | null>(null);
+  // Time edit modal state
+  const [showTimeEdit, setShowTimeEdit] = useState(false);
+  const [timeEditEnergy, setTimeEditEnergy] = useState<'High'|'Medium'|'Low'|null>(null);
+  const [timeEditStart, setTimeEditStart] = useState<string>('');
+  const [timeEditEnd, setTimeEditEnd] = useState<string>('');
+  const [timeEditError, setTimeEditError] = useState<string | null>(null);
   const [username, setUsername] = useState<string | null>(null);
   const [originalScheduleData, setOriginalScheduleData] = useState<ScheduleData | null>(null);
   // Quick add inputs for tasks modal
   const [newTaskName, setNewTaskName] = useState<string>('');
   const [newTaskDuration, setNewTaskDuration] = useState<number | ''>('');
   const [newTaskError, setNewTaskError] = useState<string | null>(null);
+  // Duration overfill popup state
+  const [showDurationOverfill, setShowDurationOverfill] = useState<{ open: boolean; block: 'High'|'Medium'|'Low'|null } | null>(null);
+  const [shakeTaskId, setShakeTaskId] = useState<number | string | null>(null);
 
   const getCurrentBlockRemaining = (): number => {
     const currentDayData = scheduleData.days[currentDay];
@@ -195,13 +205,106 @@ export default function SchedulePage() {
       return false;
     }
 
-    // Simple overlap detection (no wrap)
-    const overlap = (aS: number, aE: number, bS: number, bE: number) => (aS < bE && bS < aE);
-    if (overlap(hS, hE, mS, mE) || overlap(hS, hE, lS, lE) || overlap(mS, mE, lS, lE)) {
-      setError('Energy block times cannot overlap. Please adjust the times.');
-      return false;
-    }
     return true;
+  };
+
+  const hasOverlapSimple = (times: { high: TimeBlock; medium: TimeBlock; low: TimeBlock }): boolean => {
+    const toMin = (t:string)=>{ const [h,m] = t.split(':').map(Number); return h*60+m; };
+    const hS = toMin(times.high.startTime), hE = toMin(times.high.endTime);
+    const mS = toMin(times.medium.startTime), mE = toMin(times.medium.endTime);
+    const lS = toMin(times.low.startTime), lE = toMin(times.low.endTime);
+    const overlap = (aS:number,aE:number,bS:number,bE:number)=> (aS < bE && bS < aE);
+    return overlap(hS,hE,mS,mE) || overlap(hS,hE,lS,lE) || overlap(mS,mE,lS,lE);
+  };
+
+  const autoAdjustContinuous = (times: { high: TimeBlock; medium: TimeBlock; low: TimeBlock }): { high: TimeBlock; medium: TimeBlock; low: TimeBlock } => {
+    const toMin = (t:string)=>{ const [h,m] = t.split(':').map(Number); return h*60+m; };
+    const fromMin = (x:number)=> `${String(Math.floor(x/60)).padStart(2,'0')}:${String(x%60).padStart(2,'0')}`;
+    const dur = (s:number,e:number)=> Math.max(1, e - s);
+    let hS = toMin(times.high.startTime), hE = toMin(times.high.endTime);
+    let mS = toMin(times.medium.startTime), mE = toMin(times.medium.endTime);
+    let lS = toMin(times.low.startTime), lE = toMin(times.low.endTime);
+    const mDur = dur(mS,mE), lDur = dur(lS,lE);
+    if (mS < hE) mS = hE; mE = mS + mDur;
+    if (lS < mE) lS = mE; lE = lS + lDur;
+    return {
+      high: { startTime: fromMin(hS), endTime: fromMin(hE) },
+      medium: { startTime: fromMin(mS), endTime: fromMin(mE) },
+      low: { startTime: fromMin(lS), endTime: fromMin(lE) }
+    };
+  };
+
+  // Adjust nearest adjacent blocks when a single block is changed to prevent overlaps
+  const adjustAdjacentForChange = (
+    base: { high: TimeBlock; medium: TimeBlock; low: TimeBlock },
+    changed: 'High'|'Medium'|'Low',
+    startTime: string,
+    endTime: string
+  ): { high: TimeBlock; medium: TimeBlock; low: TimeBlock } => {
+    const toMin = (t:string)=>{ const [h,m]=t.split(':').map(Number); return h*60+m; };
+    const fromMin = (x:number)=> `${String(Math.floor(x/60)).padStart(2,'0')}:${String(x%60).padStart(2,'0')}`;
+    const res = JSON.parse(JSON.stringify(base)) as { high: TimeBlock; medium: TimeBlock; low: TimeBlock };
+    // Set changed
+    const key = changed.toLowerCase() as 'high'|'medium'|'low';
+    res[key] = { startTime, endTime };
+
+    const hS = toMin(res.high.startTime), hE = toMin(res.high.endTime);
+    let mS = toMin(res.medium.startTime), mE = toMin(res.medium.endTime);
+    let lS = toMin(res.low.startTime), lE = toMin(res.low.endTime);
+
+    // Maintain chronological order High -> Medium -> Low by clamping adjacent edges
+    // Fix overlap with High↔Medium
+    if (hE > mS) {
+      if (changed === 'High') {
+        // pull Medium start to High end
+        mS = hE;
+      } else {
+        // push High end back to Medium start
+        // ensure at least 1 minute duration
+        const newHE = Math.max(hS + 1, mS);
+        res.high.endTime = fromMin(newHE);
+      }
+    }
+    // Apply Medium start update
+    res.medium.startTime = fromMin(mS);
+    // Recompute overlap after any change
+    const newHE2 = toMin(res.high.endTime);
+    mS = toMin(res.medium.startTime);
+    // Ensure Medium end > start
+    if (mE <= mS) mE = mS + 1;
+
+    // Fix overlap with Medium↔Low
+    if (mE > lS) {
+      if (changed === 'Medium') {
+        lS = mE;
+      } else if (changed === 'Low') {
+        mE = Math.max(mS + 1, lS);
+      } else {
+        // changed High -> keep Medium then move Low start if needed
+        lS = Math.max(lS, mE);
+      }
+    }
+
+    // Apply results
+    res.medium.endTime = fromMin(mE);
+    res.low.startTime = fromMin(lS);
+    if (lE <= lS) lE = lS + 1;
+    res.low.endTime = fromMin(lE);
+    // Ensure High end consistent
+    res.high.endTime = fromMin(newHE2);
+    return res;
+  };
+
+  const applyTemplateTimesToBackend = async (updated: { high: TimeBlock; medium: TimeBlock; low: TimeBlock }) => {
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const uid = sessionData.session?.user?.id;
+      if (!uid) return;
+      // Update three templates by energy_type
+      await supabase.from('session_templates').update({ start_time: updated.high.startTime, end_time: updated.high.endTime }).eq('user_id', uid).eq('energy_type', 'High');
+      await supabase.from('session_templates').update({ start_time: updated.medium.startTime, end_time: updated.medium.endTime }).eq('user_id', uid).eq('energy_type', 'Medium');
+      await supabase.from('session_templates').update({ start_time: updated.low.startTime, end_time: updated.low.endTime }).eq('user_id', uid).eq('energy_type', 'Low');
+    } catch (e) { console.error('Failed to update templates', e); }
   };
 
   // Validate tasks for current block and day
@@ -213,11 +316,36 @@ export default function SchedulePage() {
     const totalTaskDuration = currentTasks.reduce((sum, task) => sum + task.duration, 0);
 
     if (totalTaskDuration > blockDuration) {
-      setError(`Total task duration (${totalTaskDuration}min) exceeds block duration (${blockDuration}min)`);
+      console.log('[DurationValidation] Builder save blocked:', { block: currentTaskBlock, totalTaskDuration, blockDuration });
+      setShowDurationOverfill({ open: true, block: (currentTaskBlock === 'high' ? 'High' : currentTaskBlock === 'medium' ? 'Medium' : 'Low') });
       return false;
     }
 
     return true;
+  };
+
+  // Validate proposed duration change for DB-backed edit (BlocksView)
+  const validateDbEditDuration = (energy: 'High'|'Medium'|'Low', taskId: number, proposedMinutes: number): boolean => {
+    try {
+      if (!Array.isArray(dayBlocks)) return true; // nothing to validate against
+      const toKey = (e:'High'|'Medium'|'Low') => (e==='High'?'high':e==='Medium'?'medium':'low') as 'high'|'medium'|'low';
+      const key = toKey(energy);
+      const times = scheduleData.days[currentDay].times[key];
+      const blockDuration = getBlockDuration(times.startTime, times.endTime);
+      const block = dayBlocks.find(b => b.energy === energy);
+      if (!block) return true;
+      const otherSum = block.tasks.reduce((acc, t) => acc + (t.id === taskId ? 0 : (t.duration_minutes || 0)), 0);
+      const total = otherSum + Math.max(0, proposedMinutes);
+      console.log('[DurationValidation] DB edit check:', { energy, taskId, proposedMinutes, otherSum, total, blockDuration });
+      if (total > blockDuration) {
+        setShowDurationOverfill({ open: true, block: energy });
+        return false;
+      }
+      return true;
+    } catch (e) {
+      console.warn('validateDbEditDuration failed:', e);
+      return true;
+    }
   };
 
   // Validate at least one task exists in ANY energy block
@@ -327,13 +455,26 @@ export default function SchedulePage() {
   const handleSaveTimes = () => {
     if (!validateTimes()) return;
     
-    const currentTimes = scheduleData.days[currentDay].times;
+    let currentTimes = scheduleData.days[currentDay].times;
+    if (hasOverlapSimple(currentTimes)) {
+      const ok = window.confirm('Your blocks overlap. Auto-adjust the other blocks to remove overlaps and keep times continuous?');
+      if (!ok) { setError('Please resolve overlaps or allow auto-adjust.'); return; }
+      const adjusted = autoAdjustContinuous(currentTimes);
+      setScheduleData(prev => ({
+        ...prev,
+        days: {
+          ...prev.days,
+          [currentDay]: { ...prev.days[currentDay], times: adjusted }
+        }
+      }));
+      currentTimes = adjusted;
+    }
+
     applyTimesToSelectedDays(currentTimes);
     
     setSuccess('Block times updated across all selected days.');
     setTimeout(() => setSuccess(null), 3000);
     setCurrentStep('tasks');
-    // Refresh blocks view live when saving later
   };
 
   // Save tasks for current block
@@ -958,7 +1099,7 @@ export default function SchedulePage() {
 
   useEffect(() => { loadTodayBlocks(); }, []);
 
-  const updateTaskField = async (taskId: number, payload: Partial<{ name: string; description: string | null; duration_minutes: number | null; status: 'active'|'completed'|'skipped' }>) => {
+          const updateTaskField = async (taskId: number, payload: Partial<{ name: string; description: string | null; duration_minutes: number | null; status: 'active'|'completed'|'skipped' }>) => {
     try {
       const { data: sessionData } = await supabase.auth.getSession();
       const token = sessionData.session?.access_token;
@@ -972,6 +1113,20 @@ export default function SchedulePage() {
       setEditingTaskId(null);
     } catch (e) { console.error(e); }
   };
+
+          const deleteTaskById = async (taskId: number) => {
+            try {
+              const { data: sessionData } = await supabase.auth.getSession();
+              const token = sessionData.session?.access_token;
+              if (!token) return;
+              await fetch(`/api/tasks?id=${taskId}`, {
+                method: 'DELETE',
+                headers: { Authorization: `Bearer ${token}` }
+              });
+              await loadTodayBlocks();
+              setEditingTaskId(null);
+            } catch (e) { console.error(e); }
+          };
 
   const BlocksView = () => {
     if (!dayBlocks) return null;
@@ -990,7 +1145,16 @@ export default function SchedulePage() {
                   }`}>{icon}</div>
                   <div className="font-semibold text-slate-900">{block.energy} Energy</div>
                 </div>
-                <div className="text-xs text-slate-600 flex items-center gap-1"><Clock className="h-4 w-4" />{formatRange((block.start_time||'00:00').slice(0,5),(block.end_time||'00:00').slice(0,5))}</div>
+                <div className="text-xs text-slate-700 flex items-center gap-2">
+                  <Clock className="h-4 w-4" />
+                    <button
+                    onClick={()=>{ setTimeEditEnergy(block.energy as any); setTimeEditStart((block.start_time||'00:00').slice(0,5)); setTimeEditEnd((block.end_time||'00:00').slice(0,5)); setShowTimeEdit(true); setTimeEditError(null); }}
+                    className="hover:underline"
+                    title="Edit times"
+                  >
+                    {formatRange((block.start_time||'00:00').slice(0,5),(block.end_time||'00:00').slice(0,5))}
+                    </button>
+                  </div>
                   </div>
                   
               <div className="space-y-2">
@@ -1000,7 +1164,7 @@ export default function SchedulePage() {
                   block.tasks.map(t => (
                     <div
                       key={t.id}
-                      className={`rounded-xl border border-white/30 bg-white/80 p-3 ${editingTaskId !== t.id ? 'cursor-pointer' : ''}`}
+                      className={`rounded-xl border border-white/30 bg-white/80 p-3 ${editingTaskId !== t.id ? 'cursor-pointer' : ''} ${shakeTaskId===t.id ? 'animate-[shake_0.3s_ease-in-out]' : ''}`}
                       onClick={() => { if (editingTaskId !== t.id) setEditingTaskId(t.id); }}
                     >
                       {editingTaskId === t.id ? (
@@ -1013,7 +1177,7 @@ export default function SchedulePage() {
                               className="w-full px-3 py-2 rounded bg-white/90 border border-gray-300 text-slate-900"
                               aria-label="Task name"
                             />
-                          </div>
+                      </div>
                           <div>
                             <label className="block text-sm font-medium text-slate-800 mb-1">Description</label>
                             <textarea
@@ -1023,21 +1187,34 @@ export default function SchedulePage() {
                               className="w-full px-3 py-2 rounded bg-white/90 border border-gray-300 text-slate-900"
                               aria-label="Task description"
                             />
-                          </div>
+                  </div>
                           <div>
                             <label className="block text-sm font-medium text-slate-800 mb-1">Duration (min)</label>
                             <input
                               type="number"
                               defaultValue={t.duration_minutes || 0}
-                              onBlur={(e)=>updateTaskField(t.id,{ duration_minutes: parseInt(e.target.value)||0 })}
+                              onBlur={(e)=>{
+                                const val = parseInt(e.target.value)||0;
+                                const ok = validateDbEditDuration(block.energy as 'High'|'Medium'|'Low', t.id, val);
+                                if (!ok) {
+                                  setShakeTaskId(t.id);
+                                  setTimeout(()=> setShakeTaskId(null), 400);
+                                  e.target.value = String(t.duration_minutes||0);
+                                  return;
+                                }
+                                updateTaskField(t.id,{ duration_minutes: val });
+                              }}
                               className="w-full px-3 py-2 rounded bg-white/90 border border-gray-300 text-slate-900"
                               aria-label="Task duration in minutes"
                               min={0}
                             />
-                          </div>
-                          <div className="text-right">
+                </div>
+                          <div className="flex items-center justify-end gap-3">
+                            <button onClick={() => {
+                              if (window.confirm('Delete this task?')) { deleteTaskById(t.id); }
+                            }} className="px-3 py-1 text-sm text-red-600 hover:text-red-700">Delete</button>
                             <button onClick={() => setEditingTaskId(null)} className="px-3 py-1 text-sm text-slate-700">Done</button>
-                          </div>
+            </div>
                         </div>
                       ) : (
                         <div className="flex items-center justify-between">
@@ -1164,6 +1341,110 @@ export default function SchedulePage() {
             >
               <div className="p-6">
                 {renderModalContent()}
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Time Edit Modal */}
+      <AnimatePresence>
+        {showTimeEdit && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-[60]"
+          >
+            <motion.div
+              initial={{ scale: 0.98, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.98, opacity: 0 }}
+              className="rounded-2xl shadow-xl max-w-md w-full bg-white/90 backdrop-blur-md border border-white/30"
+            >
+              <div className="p-6">
+                <div className="mb-4">
+                  <h3 className="text-lg font-semibold text-slate-900">Edit {timeEditEnergy || ''} Block</h3>
+                  <p className="text-sm text-slate-600">Update start and end times</p>
+                </div>
+                {timeEditError && (
+                  <div className="mb-3 text-sm text-red-600">{timeEditError}</div>
+                )}
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-slate-800 mb-1">Start Time</label>
+                    <input type="time" value={timeEditStart} onChange={(e)=> setTimeEditStart(e.target.value)} className="w-full px-3 py-2 rounded-lg bg-white/90 border border-gray-300 text-slate-900" />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-800 mb-1">End Time</label>
+                    <input type="time" value={timeEditEnd} onChange={(e)=> setTimeEditEnd(e.target.value)} className="w-full px-3 py-2 rounded-lg bg-white/90 border border-gray-300 text-slate-900" />
+                  </div>
+                </div>
+                <div className="mt-6 flex justify-end gap-3">
+                  <button onClick={()=> { setShowTimeEdit(false); setTimeEditEnergy(null); }} className="px-4 py-2 text-slate-700 hover:text-slate-900">Cancel</button>
+                  <button
+                    onClick={async ()=>{
+                      if (!timeEditEnergy) return;
+                      const key = timeEditEnergy.toLowerCase() as 'high'|'medium'|'low';
+                      const nextTimes = { ...scheduleData.days[currentDay].times } as any;
+                      // basic validation
+                      const toMin = (t:string)=>{ const [h,m]=t.split(':').map(Number); return h*60+m; };
+                      if (!(toMin(timeEditEnd) > toMin(timeEditStart))) { setTimeEditError('End time must be after start time.'); return; }
+                      nextTimes[key] = { startTime: timeEditStart, endTime: timeEditEnd };
+                      // Adjust adjacent automatically to remove overlaps
+                      const adjusted = adjustAdjacentForChange({ high: nextTimes.high, medium: nextTimes.medium, low: nextTimes.low }, timeEditEnergy, timeEditStart, timeEditEnd);
+                      setScheduleData(prev=>({ ...prev, days: { ...prev.days, [currentDay]: { ...prev.days[currentDay], times: adjusted } } }));
+                      await applyTemplateTimesToBackend(adjusted);
+                      await loadTodayBlocks();
+                      setShowTimeEdit(false);
+                      setTimeEditEnergy(null);
+                      setSuccess('Schedule updated to prevent overlapping times.');
+                      setTimeout(()=> setSuccess(null), 2000);
+                    }}
+                    className="px-4 py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700"
+                  >Save</button>
+                </div>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Duration Overfill Themed Popup */}
+      <AnimatePresence>
+        {showDurationOverfill?.open && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/60 flex items-center justify-center p-4 z-[70]"
+          >
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="max-w-md w-full rounded-2xl shadow-xl bg-white/90 backdrop-blur-md border border-white/30"
+            >
+              <div className="p-6">
+                <h3 className="text-lg font-semibold text-slate-900 mb-2">Not enough time in this block</h3>
+                <p className="text-slate-700 mb-4">The total duration of all tasks exceeds the available time for this energy block.</p>
+                <div className="space-y-2 text-slate-800">
+                  <div className="flex items-start gap-2">
+                    <span className="mt-1 h-1.5 w-1.5 rounded-full bg-slate-500"></span>
+                    <span>Change the duration of the energy block</span>
+                  </div>
+                  <div className="flex items-start gap-2">
+                    <span className="mt-1 h-1.5 w-1.5 rounded-full bg-slate-500"></span>
+                    <span>Change the duration of some tasks</span>
+                  </div>
+                  <div className="flex items-start gap-2">
+                    <span className="mt-1 h-1.5 w-1.5 rounded-full bg-slate-500"></span>
+                    <span>Delete some tasks from the block</span>
+                  </div>
+                </div>
+                <div className="mt-6 flex justify-end">
+                  <button onClick={()=> setShowDurationOverfill({ open: false, block: null })} className="px-4 py-2 rounded-lg bg-slate-900 text-white hover:bg-slate-800">Close</button>
+                </div>
               </div>
             </motion.div>
           </motion.div>

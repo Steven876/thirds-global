@@ -13,7 +13,7 @@
 
 import { useEffect, useState } from 'react';
 import { CircularTimerProps } from '@/lib/types';
-import { secondsToMMSS, getEnergyColor } from '@/lib/time';
+import { secondsToMMSS } from '@/lib/time';
 
 export default function CircularTimer({ 
   currentTask, 
@@ -37,8 +37,9 @@ export default function CircularTimer({
     }
   }, [displayTime, isRunning, onComplete]);
 
-  // Calculate progress percentage (0-100)
-  const progress = Math.max(0, Math.min(100, (displayTime / (25 * 60)) * 100)); // Assuming 25min max
+  // Calculate progress percentage relative to the provided timeRemainingSec baseline
+  const maxSeconds = Math.max(timeRemainingSec, 1);
+  const progress = Math.max(0, Math.min(100, (displayTime / maxSeconds) * 100));
   const radius = 120; // bigger radius for larger circle
   const circumference = 2 * Math.PI * radius;
   const strokeDashoffset = circumference - (progress / 100) * circumference;
@@ -50,9 +51,9 @@ export default function CircularTimer({
   };
 
   const energyBgColors = {
-    high: 'text-orange-600',
-    medium: 'text-amber-600',
-    low: 'text-slate-600'
+    high: 'text-white',
+    medium: 'text-white',
+    low: 'text-white'
   };
 
   return (
@@ -95,9 +96,7 @@ export default function CircularTimer({
             <div className={`text-5xl font-bold ${energyBgColors[energyLevel]}`}>
               {secondsToMMSS(displayTime)}
             </div>
-            <div className="text-sm text-gray-500 mt-2">
-              remaining
-            </div>
+            {/* no extra caption to keep contrast in night theme */}
           </div>
         </div>
       </div>
