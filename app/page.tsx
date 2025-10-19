@@ -35,19 +35,19 @@ const features = [
 
 const energyBlocks = [
   {
-    period: 'Morning',
+    period: 'High',
     icon: Zap,
     color: 'from-yellow-400 to-orange-500',
     description: 'High energy for deep work and complex tasks'
   },
   {
-    period: 'Afternoon',
+    period: 'Medium',
     icon: Battery,
     color: 'from-orange-400 to-blue-500',
     description: 'Medium energy for meetings and collaboration'
   },
   {
-    period: 'Night',
+    period: 'Low',
     icon: Moon,
     color: 'from-blue-600 to-indigo-800',
     description: 'Low energy for planning and reflection'
@@ -103,12 +103,6 @@ export default function LandingPage() {
               >
                 <span>Start My Flow</span>
                 <ArrowRight className="h-5 w-5" />
-              </Link>
-              <Link
-                href="/schedule"
-                className="inline-flex items-center space-x-2 px-8 py-4 bg-white text-gray-700 rounded-lg hover:bg-gray-50 transition-colors text-lg font-medium border border-gray-300"
-              >
-                <span>View Demo</span>
               </Link>
             </div>
           </motion.div>

@@ -11,82 +11,25 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { ApiResponse, Schedule } from '@/lib/types';
+import { ApiResponse } from '@/lib/types';
+import { upsertSchedule, upsertSessionTemplate, createSession, listSessionsForSchedule } from '../../../lib/db/crud';
+import { getSupabaseFromRequest } from '@/lib/supabaseClient';
+import type { DayOfWeek, EnergyLevelDb } from '../../../lib/db/types';
 
-// Mock data for development
-const mockSchedules: Schedule[] = [
-  {
-    id: '1',
-    user_id: 'user-1',
-    block: 'morning',
-    start_time: '06:00',
-    end_time: '12:00',
-    energy: 'high',
-    task: 'Deep Work',
-    notes: 'Focus on complex tasks',
-    recurring_days: ['monday', 'tuesday', 'wednesday', 'thursday', 'friday'],
-    created_at: new Date().toISOString()
-  },
-  {
-    id: '2',
-    user_id: 'user-1',
-    block: 'afternoon',
-    start_time: '12:00',
-    end_time: '18:00',
-    energy: 'medium',
-    task: 'Meetings & Communication',
-    notes: 'Team sync and client calls',
-    recurring_days: ['monday', 'tuesday', 'wednesday', 'thursday', 'friday'],
-    created_at: new Date().toISOString()
-  },
-  {
-    id: '3',
-    user_id: 'user-1',
-    block: 'night',
-    start_time: '18:00',
-    end_time: '22:00',
-    energy: 'low',
-    task: 'Planning & Review',
-    notes: 'Review day and plan tomorrow',
-    recurring_days: ['monday', 'tuesday', 'wednesday', 'thursday', 'friday'],
-    created_at: new Date().toISOString()
-  }
-];
-
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
-    // TODO: Get user ID from Supabase auth
-    // const userId = 'user-1'; // Mock user ID
-    
-    // TODO: Replace with actual Supabase query
-    // const { data, error } = await supabase
-    //   .from('schedules')
-    //   .select('*')
-    //   .eq('user_id', userId);
-    
-    // Mock response
-    const userSchedules = mockSchedules.filter(s => s.user_id === 'user-1');
-    
-    // Group by block
-    const schedulesByBlock = userSchedules.reduce((acc, schedule) => {
-      acc[schedule.block] = schedule;
-      return acc;
-    }, {} as Record<string, Schedule>);
+    const { searchParams } = new URL(request.url);
+    const scheduleId = searchParams.get('schedule_id');
+    if (!scheduleId) {
+      const response: ApiResponse = { ok: false, error: 'schedule_id is required' };
+      return NextResponse.json(response, { status: 400 });
+    }
 
-    const response: ApiResponse<Record<string, Schedule>> = {
-      ok: true,
-      data: schedulesByBlock
-    };
-
+    const sessions = await listSessionsForSchedule(request, Number(scheduleId));
+    const response: ApiResponse = { ok: true, data: sessions };
     return NextResponse.json(response);
   } catch (error) {
-    console.error('Error fetching schedules:', error);
-    
-    const response: ApiResponse = {
-      ok: false,
-      error: 'Failed to fetch schedules'
-    };
-
+    const response: ApiResponse = { ok: false, error: 'Failed to fetch schedule sessions' };
     return NextResponse.json(response, { status: 500 });
   }
 }
@@ -94,54 +37,55 @@ export async function GET() {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    
-    // TODO: Validate request body with zod
-    if (!body || !Array.isArray(body)) {
-      const response: ApiResponse = {
-        ok: false,
-        error: 'Invalid request body. Expected array of schedules.'
-      };
+    // Body contract:
+    // {
+    //   user_id: string,
+    //   day_of_week: DayOfWeek,
+    //   sleep_time: HH:MM[:SS] | null,
+    //   wake_time: HH:MM[:SS] | null,
+    //   sessions: [
+    //     { energy_type: EnergyLevelDb, start_time: HH:MM[:SS], end_time: HH:MM[:SS] }, ... (3 items)
+    //   ]
+    // }
+    if (!body?.user_id || !body?.day_of_week || !Array.isArray(body?.sessions) || body.sessions.length !== 3) {
+      const response: ApiResponse = { ok: false, error: 'Invalid body: provide user_id, day_of_week, sleep_time, wake_time, and exactly 3 sessions.' };
       return NextResponse.json(response, { status: 400 });
     }
 
-    // TODO: Get user ID from Supabase auth
-    // const userId = 'user-1'; // Mock user ID
-    
-    // TODO: Validate each schedule
-    for (const schedule of body) {
-      if (!schedule.block || !schedule.start_time || !schedule.end_time || !schedule.energy) {
-        const response: ApiResponse = {
-          ok: false,
-          error: 'Missing required fields: block, start_time, end_time, energy'
-        };
-        return NextResponse.json(response, { status: 400 });
-      }
+    const schedule = await upsertSchedule(request, {
+      user_id: body.user_id as string,
+      day_of_week: body.day_of_week as DayOfWeek,
+      sleep_time: body.sleep_time ?? null,
+      wake_time: body.wake_time ?? null
+    });
+
+    // Upsert templates and create sessions linked to schedule
+    const createdSessionIds: number[] = [];
+    for (const s of body.sessions as Array<{ energy_type: EnergyLevelDb; start_time: string; end_time: string }>) {
+      const template = await upsertSessionTemplate(request, {
+        user_id: body.user_id as string,
+        energy_type: s.energy_type,
+        start_time: s.start_time,
+        end_time: s.end_time
+      });
+      // upsert session by (schedule_id, template_id)
+      const supabase = getSupabaseFromRequest(request);
+      const { data: sessionRow, error: sessionErr } = await supabase
+        .from('sessions')
+        .upsert(
+          [{ schedule_id: schedule.id, template_id: template.id }],
+          { onConflict: 'schedule_id,template_id' }
+        )
+        .select()
+        .single();
+      if (sessionErr) throw sessionErr;
+      createdSessionIds.push(sessionRow.id);
     }
 
-    // TODO: Replace with actual Supabase upsert
-    // const { data, error } = await supabase
-    //   .from('schedules')
-    //   .upsert(body.map(schedule => ({
-    //     ...schedule,
-    //     user_id: userId,
-    //     updated_at: new Date().toISOString()
-    //   })));
-
-    // Mock success response
-    const response: ApiResponse = {
-      ok: true,
-      data: { message: 'Schedules saved successfully' }
-    };
-
+    const response: ApiResponse = { ok: true, data: { schedule_id: schedule.id, session_ids: createdSessionIds } };
     return NextResponse.json(response);
   } catch (error) {
-    console.error('Error saving schedules:', error);
-    
-    const response: ApiResponse = {
-      ok: false,
-      error: 'Failed to save schedules'
-    };
-
+    const response: ApiResponse = { ok: false, error: 'Failed to save schedule' };
     return NextResponse.json(response, { status: 500 });
   }
 }

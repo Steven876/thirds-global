@@ -56,10 +56,12 @@ export interface Report {
 
 // UI Component Props
 export interface TaskItem {
+  id?: number; // optional DB id if available
   label: string;
   range: string;
   energy: EnergyLevel;
   done?: boolean;
+  status?: 'active' | 'completed' | 'skipped';
 }
 
 export interface CircularTimerProps {
@@ -92,4 +94,10 @@ export interface ApiResponse<T = unknown> {
 
 export interface InsightsResponse {
   suggestions: string[];
+  proposals?: Array<{
+    type: 'shift_high_block';
+    target: { start: string; end: string };
+    rationale: string;
+  }>;
+  motivation?: string;
 }

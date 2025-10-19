@@ -18,7 +18,7 @@ export function getCurrentBlock(now: Date = new Date()): Block {
   
   if (hour >= 5 && hour < 12) {
     return 'morning';
-  } else if (hour >= 12 && hour < 18) {
+  } else if (hour >= 12 && hour < 19) {
     return 'afternoon';
   } else {
     return 'night';
@@ -78,12 +78,52 @@ export function secondsToMMSS(seconds: number): string {
  */
 export function getBlockTheme(block: Block): string {
   const themes = {
-    morning: 'from-yellow-100 via-orange-200 to-orange-300',
-    afternoon: 'from-orange-200 via-amber-200 to-blue-200',
-    night: 'from-indigo-900 via-indigo-700 to-slate-800'
+    morning: 'soft-morning',
+    afternoon: 'soft-afternoon',
+    night: 'soft-night'
   };
-  
-  return `bg-gradient-to-br ${themes[block]}`;
+  return `${themes[block]} animated-gradient`;
+}
+
+/**
+ * Compute energy-based theme class from today's session templates.
+ * - Returns one of: soft-energy-high | soft-energy-medium | soft-energy-low
+ * - Keeps last active energy if current time is between sessions (gap)
+ */
+export function getEnergyThemeForNow(templates: Array<{ energy: 'High'|'Medium'|'Low'; start: string; end: string }>, now: Date = new Date()): string {
+  if (!Array.isArray(templates) || templates.length === 0) return 'soft-energy-low animated-gradient';
+  const nowMin = now.getHours() * 60 + now.getMinutes();
+  const toMin = (t: string) => {
+    const [h, m] = t.split(':').map(Number); return h * 60 + m;
+  };
+  const segments = templates.map(t => ({ energy: t.energy, s: toMin(t.start), e: toMin(t.end) }));
+
+  const inRange = segments.find(seg => seg.s <= seg.e ? (nowMin >= seg.s && nowMin < seg.e) : (nowMin >= seg.s || nowMin < seg.e));
+  const lastPast = segments
+    .filter(seg => (seg.s <= seg.e ? seg.e <= nowMin : true))
+    .sort((a,b) => (b.e - a.e))[0];
+
+  const energy = inRange?.energy || lastPast?.energy || 'Low';
+  switch (energy) {
+    case 'High': return 'soft-energy-high animated-gradient';
+    case 'Medium': return 'soft-energy-medium animated-gradient';
+    default: return 'soft-energy-low animated-gradient';
+  }
+}
+
+/**
+ * Returns readable text colors for the current block
+ */
+export function getBlockTextColors(block: Block): { primary: string; secondary: string } {
+  switch (block) {
+    case 'night':
+      return { primary: 'text-white', secondary: 'text-slate-200' };
+    case 'afternoon':
+      return { primary: 'text-slate-900', secondary: 'text-slate-700' };
+    case 'morning':
+    default:
+      return { primary: 'text-slate-900', secondary: 'text-slate-700' };
+  }
 }
 
 /**

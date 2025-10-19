@@ -2,18 +2,16 @@
  * AIWidget Component
  * 
  * Right sidebar widget that displays AI-powered insights and suggestions.
- * Fetches data from /api/insights and handles loading/error states.
- * 
- * TODO: Replace mock data with real AI integration
- * TODO: Add more sophisticated recommendation engine
- * TODO: Add user feedback on suggestions
+ * Fetches personalized recommendations from /api/insights based on user's session data.
+ * Shows loading states and handles errors gracefully.
  */
 
 'use client';
 
 import { useState, useEffect } from 'react';
-import { Brain, Lightbulb, TrendingUp } from 'lucide-react';
+import { Brain, Lightbulb, TrendingUp, RefreshCw } from 'lucide-react';
 import { InsightsResponse } from '@/lib/types';
+import { supabase } from '@/lib/supabaseClient';
 import EmptyState from './EmptyState';
 import ErrorMessage from './ErrorMessage';
 
@@ -21,40 +19,55 @@ export default function AIWidget() {
   const [insights, setInsights] = useState<InsightsResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
 
   useEffect(() => {
     fetchInsights();
   }, []);
 
-  const fetchInsights = async () => {
+  const fetchInsights = async (isRefresh = false) => {
     try {
-      setLoading(true);
+      if (isRefresh) {
+        setRefreshing(true);
+      } else {
+        setLoading(true);
+      }
       setError(null);
       
-      // TODO: Replace with actual API call
-      // const response = await fetch('/api/insights');
-      // const data = await response.json();
+      // Get the current session token for authentication
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.access_token) {
+        // Not authenticated: render a quiet empty state without throwing
+        setInsights(null);
+        setError('Sign in to view insights');
+        return;
+      }
       
-      // Mock data for now
-      const mockData: InsightsResponse = {
-        suggestions: [
-          "You've completed 4h of deep work — consider a longer break.",
-          "Your morning sessions are most productive. Try scheduling important tasks then.",
-          "You've been pausing frequently in the afternoon. Consider adjusting your schedule.",
-          "Great job maintaining focus! Your consistency is improving."
-        ]
-      };
+      const response = await fetch('/api/insights', {
+        headers: {
+          'Authorization': `Bearer ${session.access_token}`,
+          'Content-Type': 'application/json',
+        },
+      });
+      const data = await response.json();
       
-      // Simulate API delay
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      if (!response.ok || !data?.ok) {
+        setInsights(null);
+        setError(data?.error || 'Failed to fetch insights');
+        return;
+      }
       
-      setInsights(mockData);
+      setInsights(data.data);
     } catch (err) {
-      setError('Failed to load insights. Please try again.');
-      console.error('Error fetching insights:', err);
+      setError('Failed to load personalized insights. Please try again.');
     } finally {
       setLoading(false);
+      setRefreshing(false);
     }
+  };
+
+  const handleRefresh = () => {
+    fetchInsights(true);
   };
 
   if (loading) {
@@ -134,10 +147,12 @@ export default function AIWidget() {
 
       <div className="mt-4 pt-4 border-t border-gray-200">
         <button
-          onClick={fetchInsights}
-          className="text-xs text-gray-500 hover:text-gray-700 transition-colors"
+          onClick={handleRefresh}
+          disabled={refreshing}
+          className="flex items-center space-x-1 text-xs text-gray-500 hover:text-gray-700 transition-colors disabled:opacity-50"
         >
-          Refresh insights
+          <RefreshCw className={`h-3 w-3 ${refreshing ? 'animate-spin' : ''}`} />
+          <span>{refreshing ? 'Refreshing...' : 'Refresh insights'}</span>
         </button>
       </div>
     </div>
