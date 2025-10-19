@@ -13,6 +13,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { ApiResponse } from '@/lib/types';
 import { upsertSchedule, upsertSessionTemplate, createSession, listSessionsForSchedule } from '../../../lib/db/crud';
+import { getSupabaseFromRequest } from '@/lib/supabaseClient';
 import type { DayOfWeek, EnergyLevelDb } from '../../../lib/db/types';
 
 export async function GET(request: NextRequest) {
@@ -67,8 +68,18 @@ export async function POST(request: NextRequest) {
         start_time: s.start_time,
         end_time: s.end_time
       });
-      const session = await createSession(request, { schedule_id: schedule.id, template_id: template.id });
-      createdSessionIds.push(session.id);
+      // upsert session by (schedule_id, template_id)
+      const supabase = getSupabaseFromRequest(request);
+      const { data: sessionRow, error: sessionErr } = await supabase
+        .from('sessions')
+        .upsert(
+          [{ schedule_id: schedule.id, template_id: template.id }],
+          { onConflict: 'schedule_id,template_id' }
+        )
+        .select()
+        .single();
+      if (sessionErr) throw sessionErr;
+      createdSessionIds.push(sessionRow.id);
     }
 
     const response: ApiResponse = { ok: true, data: { schedule_id: schedule.id, session_ids: createdSessionIds } };

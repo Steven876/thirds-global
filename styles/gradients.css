@@ -128,3 +128,32 @@
   filter: saturate(105%) contrast(102%);
 }
 
+/* Energy-specific soft gradients */
+.soft-energy-high {
+  background-image:
+    radial-gradient(1200px 800px at 10% 20%, rgba(167, 243, 208, 0.45), transparent 60%), /* green */
+    radial-gradient(900px 700px at 80% 30%, rgba(196, 181, 253, 0.35), transparent 60%), /* purple */
+    radial-gradient(1000px 800px at 40% 90%, rgba(16, 185, 129, 0.35), transparent 60%),
+    linear-gradient(135deg, #ecfdf5 0%, #ede9fe 50%, #d1fae5 100%);
+  filter: saturate(105%) contrast(102%);
+}
+
+.soft-energy-medium {
+  background-image:
+    radial-gradient(1200px 800px at 10% 20%, rgba(254, 243, 199, 0.45), transparent 60%), /* yellow */
+    radial-gradient(900px 700px at 80% 30%, rgba(253, 186, 116, 0.40), transparent 60%), /* orange */
+    radial-gradient(1000px 800px at 40% 90%, rgba(245, 158, 11, 0.35), transparent 60%),
+    linear-gradient(135deg, #fffbeb 0%, #fff7ed 50%, #fef3c7 100%);
+  filter: saturate(105%) contrast(102%);
+}
+
+.soft-energy-low {
+  /* reuse night palette */
+  background-image:
+    radial-gradient(1200px 800px at 10% 20%, rgba(129, 140, 248, 0.25), transparent 60%),
+    radial-gradient(900px 700px at 80% 30%, rgba(165, 180, 252, 0.25), transparent 60%),
+    radial-gradient(1000px 800px at 40% 90%, rgba(203, 213, 225, 0.18), transparent 60%),
+    linear-gradient(135deg, #111827 0%, #1f2937 50%, #0f172a 100%);
+  filter: saturate(105%) contrast(102%);
+}
+

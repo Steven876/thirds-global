@@ -2,7 +2,7 @@
 
 :root {
   --background: #ffffff;
-  --foreground: #171717;
+  --foreground: #0f172a; /* slightly darker for contrast on light */
   
   /* Thirds custom CSS variables */
   --gradient-morning: linear-gradient(135deg, #fef3c7 0%, #fed7aa 50%, #fb923c 100%);
@@ -19,8 +19,8 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+    --background: #0b1220; /* richer deep blue-black */
+    --foreground: #f5f7fb; /* brighter for higher contrast */
   }
 }
 
