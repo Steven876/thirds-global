@@ -126,10 +126,13 @@ export default function ReportsPage() {
         });
         const avgTaskMinutes = totalTasks > 0 ? totalFocusMinutes / totalTasks : 0;
 
-        // AI suggestions
+        // AI suggestions (auth required)
         let suggestions: string[] = [];
         try {
-          const res = await fetch('/api/insights');
+          const token = sessionData.session?.access_token;
+          const res = await fetch('/api/insights', {
+            headers: token ? { Authorization: `Bearer ${token}` } : undefined
+          });
           const js = await res.json();
           if (js?.ok && Array.isArray(js?.data?.suggestions)) suggestions = js.data.suggestions;
           else if (Array.isArray(js)) suggestions = js; // fallback if API returns array
@@ -167,7 +170,11 @@ export default function ReportsPage() {
     useEffect(() => {
       const load = async () => {
         try {
-          const res = await fetch('/api/insights');
+          const { data: sessionData } = await supabase.auth.getSession();
+          const token = sessionData.session?.access_token;
+          const res = await fetch('/api/insights', {
+            headers: token ? { Authorization: `Bearer ${token}` } : undefined
+          });
           const js = await res.json();
           if (js?.ok && Array.isArray(js?.data?.proposals)) setProposals(js.data.proposals);
           else setProposals([]);

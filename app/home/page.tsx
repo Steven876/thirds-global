@@ -22,7 +22,7 @@ import TaskList from '@/components/TaskList';
 import AIWidget from '@/components/AIWidget';
 import ErrorMessage from '@/components/ErrorMessage';
 import { getCurrentBlock, getEnergyMessage, formatRange, getBlockTheme, getBlockTextColors, getEnergyThemeForNow } from '@/lib/time';
-import { Pause, SkipForward, Play } from 'lucide-react';
+import { Pause, SkipForward, Play, ArrowRight } from 'lucide-react';
 import { EnergyLevel, TaskItem } from '@/lib/types';
 import { supabase } from '@/lib/supabaseClient';
 
@@ -367,8 +367,8 @@ export default function HomePage() {
             <button onClick={handleSkip} className="h-12 w-12 rounded-full bg-white/70 backdrop-blur-sm border border-white/30 flex items-center justify-center text-slate-900 hover:bg-white" aria-label="Skip">
               <SkipForward className="h-5 w-5" />
             </button>
-            <button onClick={handlePlayClick} className="h-12 w-12 rounded-full bg-white/70 backdrop-blur-sm border border-white/30 flex items-center justify-center text-slate-900 hover:bg-white" aria-label="Continue or Complete (double click)">
-              <Play className="h-5 w-5" />
+            <button onClick={handleComplete} className="h-12 w-12 rounded-full bg-black text-white shadow-md flex items-center justify-center hover:bg-black/90" aria-label="Complete and next task">
+              <ArrowRight className="h-5 w-5" />
             </button>
           </div>
         </motion.div>
