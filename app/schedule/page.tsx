@@ -13,9 +13,10 @@
 
 import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { Skeleton } from '@/components/Skeleton';
 import AIWidget from '@/components/AIWidget';
 import AuthGuard from '@/components/AuthGuard';
-import { getCurrentBlock, getBlockTheme } from '@/lib/time';
+import { getCurrentBlock, getBlockTheme, formatRange, getEnergyThemeForNow } from '@/lib/time';
 import { supabase } from '@/lib/supabaseClient';
 import ErrorMessage from '@/components/ErrorMessage';
 import { 
@@ -24,7 +25,11 @@ import {
   ArrowRight, 
   Save, 
   Edit, 
-  Calendar
+  Calendar,
+  Zap,
+  Moon,
+  Square,
+  Clock
 } from 'lucide-react';
 
 interface TimeBlock {
@@ -134,10 +139,32 @@ export default function SchedulePage() {
     start_time: string;
     end_time: string;
     tasks: { id: number; name: string; description: string | null; duration_minutes: number | null; status: 'active' | 'completed' | 'skipped' }[];
-  }[] | null>(null);
+  }[] | undefined>(undefined);
   const [editingTaskId, setEditingTaskId] = useState<number | null>(null);
+  const [deletePromptTaskId, setDeletePromptTaskId] = useState<number | null>(null);
+  // Time edit modal state
+  const [showTimeEdit, setShowTimeEdit] = useState(false);
+  const [timeEditEnergy, setTimeEditEnergy] = useState<'High'|'Medium'|'Low'|null>(null);
+  const [timeEditStart, setTimeEditStart] = useState<string>('');
+  const [timeEditEnd, setTimeEditEnd] = useState<string>('');
+  const [timeEditError, setTimeEditError] = useState<string | null>(null);
   const [username, setUsername] = useState<string | null>(null);
   const [originalScheduleData, setOriginalScheduleData] = useState<ScheduleData | null>(null);
+  // Quick add inputs for tasks modal
+  const [newTaskName, setNewTaskName] = useState<string>('');
+  const [newTaskDuration, setNewTaskDuration] = useState<number | ''>('');
+  const [newTaskError, setNewTaskError] = useState<string | null>(null);
+  // Duration overfill popup state
+  const [showDurationOverfill, setShowDurationOverfill] = useState<{ open: boolean; block: 'High'|'Medium'|'Low'|null } | null>(null);
+  const [shakeTaskId, setShakeTaskId] = useState<number | string | null>(null);
+
+  const getCurrentBlockRemaining = (): number => {
+    const currentDayData = scheduleData.days[currentDay];
+    const times = currentDayData.times[currentTaskBlock];
+    const total = getBlockDuration(times.startTime, times.endTime);
+    const used = currentDayData.tasks[currentTaskBlock].reduce((sum, t) => sum + t.duration, 0);
+    return Math.max(0, total - used);
+  };
 
   // Calculate block duration in minutes
   const getBlockDuration = (startTime: string, endTime: string): number => {
@@ -146,7 +173,7 @@ export default function SchedulePage() {
     return (end.getTime() - start.getTime()) / (1000 * 60);
   };
 
-  // Validate times for current day
+  // Validate times for current day (end must be after start; no overnight)
   const validateTimes = (): boolean => {
     const currentDayData = scheduleData.days[currentDay];
     const { high, medium, low } = currentDayData.times;
@@ -157,7 +184,7 @@ export default function SchedulePage() {
       return false;
     }
 
-    // 24h HH:MM minute-based comparisons (support overnight ranges like 21:00 → 01:00)
+    // 24h HH:MM minute-based comparisons
     const toMin = (t: string) => {
       if (!t) return NaN;
       const [h, m] = t.split(':').map(Number);
@@ -172,29 +199,112 @@ export default function SchedulePage() {
       return false;
     }
 
-    // Duration must be > 0; allow overnight by wrapping to next day
-    const duration = (s: number, e: number) => (e - s + 1440) % 1440;
-    if (duration(hS, hE) === 0 || duration(mS, mE) === 0 || duration(lS, lE) === 0) {
-      setError('Start time must be before end time for each block');
+    // Enforce end strictly after start (no overnight wraps)
+    if (!(hE > hS) || !(mE > mS) || !(lE > lS)) {
+      setError('End time must be after start time for each block');
       return false;
     }
 
-    // Overlap detection on a 24h ring: split wrapped intervals into two segments
-    const splitSegs = (s: number, e: number): Array<{s:number;e:number}> => {
-      if (e > s) return [{ s, e }];
-      // wraps midnight
-      return [{ s, e: 1440 }, { s: 0, e }];
-    };
-    const segsH = splitSegs(hS, hE);
-    const segsM = splitSegs(mS, mE);
-    const segsL = splitSegs(lS, lE);
-    const segsOverlap = (A: Array<{s:number;e:number}>, B: Array<{s:number;e:number}>) =>
-      A.some(a => B.some(b => a.s < b.e && b.s < a.e));
-    if (segsOverlap(segsH, segsM) || segsOverlap(segsH, segsL) || segsOverlap(segsM, segsL)) {
-      setError('Energy block times cannot overlap. Please adjust the times.');
-      return false;
-    }
     return true;
+  };
+
+  const hasOverlapSimple = (times: { high: TimeBlock; medium: TimeBlock; low: TimeBlock }): boolean => {
+    const toMin = (t:string)=>{ const [h,m] = t.split(':').map(Number); return h*60+m; };
+    const hS = toMin(times.high.startTime), hE = toMin(times.high.endTime);
+    const mS = toMin(times.medium.startTime), mE = toMin(times.medium.endTime);
+    const lS = toMin(times.low.startTime), lE = toMin(times.low.endTime);
+    const overlap = (aS:number,aE:number,bS:number,bE:number)=> (aS < bE && bS < aE);
+    return overlap(hS,hE,mS,mE) || overlap(hS,hE,lS,lE) || overlap(mS,mE,lS,lE);
+  };
+
+  const autoAdjustContinuous = (times: { high: TimeBlock; medium: TimeBlock; low: TimeBlock }): { high: TimeBlock; medium: TimeBlock; low: TimeBlock } => {
+    const toMin = (t:string)=>{ const [h,m] = t.split(':').map(Number); return h*60+m; };
+    const fromMin = (x:number)=> `${String(Math.floor(x/60)).padStart(2,'0')}:${String(x%60).padStart(2,'0')}`;
+    const dur = (s:number,e:number)=> Math.max(1, e - s);
+    let hS = toMin(times.high.startTime), hE = toMin(times.high.endTime);
+    let mS = toMin(times.medium.startTime), mE = toMin(times.medium.endTime);
+    let lS = toMin(times.low.startTime), lE = toMin(times.low.endTime);
+    const mDur = dur(mS,mE), lDur = dur(lS,lE);
+    if (mS < hE) mS = hE; mE = mS + mDur;
+    if (lS < mE) lS = mE; lE = lS + lDur;
+    return {
+      high: { startTime: fromMin(hS), endTime: fromMin(hE) },
+      medium: { startTime: fromMin(mS), endTime: fromMin(mE) },
+      low: { startTime: fromMin(lS), endTime: fromMin(lE) }
+    };
+  };
+
+  // Adjust nearest adjacent blocks when a single block is changed to prevent overlaps
+  const adjustAdjacentForChange = (
+    base: { high: TimeBlock; medium: TimeBlock; low: TimeBlock },
+    changed: 'High'|'Medium'|'Low',
+    startTime: string,
+    endTime: string
+  ): { high: TimeBlock; medium: TimeBlock; low: TimeBlock } => {
+    const toMin = (t:string)=>{ const [h,m]=t.split(':').map(Number); return h*60+m; };
+    const fromMin = (x:number)=> `${String(Math.floor(x/60)).padStart(2,'0')}:${String(x%60).padStart(2,'0')}`;
+    const res = JSON.parse(JSON.stringify(base)) as { high: TimeBlock; medium: TimeBlock; low: TimeBlock };
+    // Set changed
+    const key = changed.toLowerCase() as 'high'|'medium'|'low';
+    res[key] = { startTime, endTime };
+
+    const hS = toMin(res.high.startTime), hE = toMin(res.high.endTime);
+    let mS = toMin(res.medium.startTime), mE = toMin(res.medium.endTime);
+    let lS = toMin(res.low.startTime), lE = toMin(res.low.endTime);
+
+    // Maintain chronological order High -> Medium -> Low by clamping adjacent edges
+    // Fix overlap with High↔Medium
+    if (hE > mS) {
+      if (changed === 'High') {
+        // pull Medium start to High end
+        mS = hE;
+      } else {
+        // push High end back to Medium start
+        // ensure at least 1 minute duration
+        const newHE = Math.max(hS + 1, mS);
+        res.high.endTime = fromMin(newHE);
+      }
+    }
+    // Apply Medium start update
+    res.medium.startTime = fromMin(mS);
+    // Recompute overlap after any change
+    const newHE2 = toMin(res.high.endTime);
+    mS = toMin(res.medium.startTime);
+    // Ensure Medium end > start
+    if (mE <= mS) mE = mS + 1;
+
+    // Fix overlap with Medium↔Low
+    if (mE > lS) {
+      if (changed === 'Medium') {
+        lS = mE;
+      } else if (changed === 'Low') {
+        mE = Math.max(mS + 1, lS);
+      } else {
+        // changed High -> keep Medium then move Low start if needed
+        lS = Math.max(lS, mE);
+      }
+    }
+
+    // Apply results
+    res.medium.endTime = fromMin(mE);
+    res.low.startTime = fromMin(lS);
+    if (lE <= lS) lE = lS + 1;
+    res.low.endTime = fromMin(lE);
+    // Ensure High end consistent
+    res.high.endTime = fromMin(newHE2);
+    return res;
+  };
+
+  const applyTemplateTimesToBackend = async (updated: { high: TimeBlock; medium: TimeBlock; low: TimeBlock }) => {
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const uid = sessionData.session?.user?.id;
+      if (!uid) return;
+      // Update three templates by energy_type
+      await supabase.from('session_templates').update({ start_time: updated.high.startTime, end_time: updated.high.endTime }).eq('user_id', uid).eq('energy_type', 'High');
+      await supabase.from('session_templates').update({ start_time: updated.medium.startTime, end_time: updated.medium.endTime }).eq('user_id', uid).eq('energy_type', 'Medium');
+      await supabase.from('session_templates').update({ start_time: updated.low.startTime, end_time: updated.low.endTime }).eq('user_id', uid).eq('energy_type', 'Low');
+    } catch (e) { console.error('Failed to update templates', e); }
   };
 
   // Validate tasks for current block and day
@@ -206,19 +316,44 @@ export default function SchedulePage() {
     const totalTaskDuration = currentTasks.reduce((sum, task) => sum + task.duration, 0);
 
     if (totalTaskDuration > blockDuration) {
-      setError(`Total task duration (${totalTaskDuration}min) exceeds block duration (${blockDuration}min)`);
+      console.log('[DurationValidation] Builder save blocked:', { block: currentTaskBlock, totalTaskDuration, blockDuration });
+      setShowDurationOverfill({ open: true, block: (currentTaskBlock === 'high' ? 'High' : currentTaskBlock === 'medium' ? 'Medium' : 'Low') });
       return false;
     }
 
     return true;
   };
 
-  // Validate at least one task exists for each energy block
-  const hasAtLeastOnePerBlock = (): boolean => {
+  // Validate proposed duration change for DB-backed edit (BlocksView)
+  const validateDbEditDuration = (energy: 'High'|'Medium'|'Low', taskId: number, proposedMinutes: number): boolean => {
+    try {
+      if (!Array.isArray(dayBlocks)) return true; // nothing to validate against
+      const toKey = (e:'High'|'Medium'|'Low') => (e==='High'?'high':e==='Medium'?'medium':'low') as 'high'|'medium'|'low';
+      const key = toKey(energy);
+      const times = scheduleData.days[currentDay].times[key];
+      const blockDuration = getBlockDuration(times.startTime, times.endTime);
+      const block = dayBlocks.find(b => b.energy === energy);
+      if (!block) return true;
+      const otherSum = block.tasks.reduce((acc, t) => acc + (t.id === taskId ? 0 : (t.duration_minutes || 0)), 0);
+      const total = otherSum + Math.max(0, proposedMinutes);
+      console.log('[DurationValidation] DB edit check:', { energy, taskId, proposedMinutes, otherSum, total, blockDuration });
+      if (total > blockDuration) {
+        setShowDurationOverfill({ open: true, block: energy });
+        return false;
+      }
+      return true;
+    } catch (e) {
+      console.warn('validateDbEditDuration failed:', e);
+      return true;
+    }
+  };
+
+  // Validate at least one task exists in ANY energy block
+  const hasAtLeastOneTask = (): boolean => {
     const dayData = scheduleData.days[currentDay];
     return (
-      dayData.tasks.high.length > 0 &&
-      dayData.tasks.medium.length > 0 &&
+      dayData.tasks.high.length > 0 ||
+      dayData.tasks.medium.length > 0 ||
       dayData.tasks.low.length > 0
     );
   };
@@ -320,13 +455,26 @@ export default function SchedulePage() {
   const handleSaveTimes = () => {
     if (!validateTimes()) return;
     
-    const currentTimes = scheduleData.days[currentDay].times;
+    let currentTimes = scheduleData.days[currentDay].times;
+    if (hasOverlapSimple(currentTimes)) {
+      const ok = window.confirm('Your blocks overlap. Auto-adjust the other blocks to remove overlaps and keep times continuous?');
+      if (!ok) { setError('Please resolve overlaps or allow auto-adjust.'); return; }
+      const adjusted = autoAdjustContinuous(currentTimes);
+      setScheduleData(prev => ({
+        ...prev,
+        days: {
+          ...prev.days,
+          [currentDay]: { ...prev.days[currentDay], times: adjusted }
+        }
+      }));
+      currentTimes = adjusted;
+    }
+
     applyTimesToSelectedDays(currentTimes);
     
     setSuccess('Block times updated across all selected days.');
     setTimeout(() => setSuccess(null), 3000);
     setCurrentStep('tasks');
-    // Refresh blocks view live when saving later
   };
 
   // Save tasks for current block
@@ -355,13 +503,17 @@ export default function SchedulePage() {
         'Content-Type': 'application/json'
       } as const;
 
+      // Immediately hide the modal for a faster-feeling flow
+      setShowModal(false);
+
       // Expand tasks according to repeat selection
       const selectedDays = getSelectedDays();
 
       // Map frontend status to backend TaskStatus
       const mapStatus = (): 'active' | 'completed' | 'skipped' => 'active';
 
-      for (const day of selectedDays) {
+      // Build promises per day to run in parallel
+      const perDayPromises = selectedDays.map(async (day) => {
         const dayData = scheduleData.days[day];
         const sessionsPayload = [
           { energy_type: 'High', start_time: dayData.times.high.startTime, end_time: dayData.times.high.endTime },
@@ -392,34 +544,40 @@ export default function SchedulePage() {
           low: sessionIds[2]
         };
 
-        // Create tasks under the corresponding sessions (from the 'currentDay' blueprint)
+        // Create tasks under corresponding sessions (from the 'currentDay' blueprint) in parallel
         const source = scheduleData.days[currentDay];
-        for (const block of ['high', 'medium', 'low'] as const) {
-          for (const task of source.tasks[block]) {
-            if (!task.name) continue;
-            await fetch('/api/sessions', {
-              method: 'POST',
-              headers: authHeaders,
-              body: JSON.stringify({
-                session_id: blockToSessionId[block],
-                name: task.name,
-                description: task.description || null,
-                duration_minutes: task.duration,
-                status: mapStatus()
+        const taskRequests: Promise<Response>[] = [];
+        (['high','medium','low'] as const).forEach((block) => {
+          source.tasks[block].forEach((task) => {
+            if (!task.name) return;
+            taskRequests.push(
+              fetch('/api/sessions', {
+                method: 'POST',
+                headers: authHeaders,
+                body: JSON.stringify({
+                  session_id: blockToSessionId[block],
+                  name: task.name,
+                  description: task.description || null,
+                  duration_minutes: task.duration,
+                  status: mapStatus()
+                })
               })
-            });
-          }
-        }
-      }
+            );
+          });
+        });
+        await Promise.all(taskRequests);
+      });
 
+      await Promise.all(perDayPromises);
+      
       setSavedSchedule(scheduleData);
       setCurrentStep('overview');
-      setShowModal(false);
       setSuccess('Schedule saved successfully!');
-      setTimeout(() => setSuccess(null), 3000);
+      setTimeout(() => setSuccess(null), 2000);
       await loadTodayBlocks();
     } catch {
       setError('Failed to save schedule. Please try again.');
+      setShowModal(false);
     } finally {
       setLoading(false);
     }
@@ -465,58 +623,66 @@ export default function SchedulePage() {
             </div>
 
             <div className="space-y-6">
+              {Array.isArray(dayBlocks) && dayBlocks.length > 0 && (
+                <div className="rounded-xl p-3 border border-white/30 bg-white/60 backdrop-blur-sm text-sm text-gray-800">
+                  Block times are fixed based on your initial setup. Use AI recommendations in Reports to adjust for productivity.
+                </div>
+              )}
               {(['high','medium','low'] as const).map((blockKey) => {
                 const times = scheduleData.days[currentDay].times[blockKey];
+                const locked = Array.isArray(dayBlocks) && dayBlocks.length > 0;
                 return (
                   <div key={blockKey} className="rounded-xl p-4 border border-white/30 bg-white/60 backdrop-blur-sm shadow-sm">
-                    <h3 className="text-lg font-semibold text-gray-900 mb-4 capitalize">
+                  <h3 className="text-lg font-semibold text-gray-900 mb-4 capitalize">
                       {blockKey} Energy Block
-                    </h3>
-                    <div className="grid grid-cols-2 gap-4">
-                      <div>
+                  </h3>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
                         <label className="block text-sm font-medium text-gray-700 mb-2">Start Time</label>
-                        <input
-                          type="time"
-                          value={times.startTime}
-                          onChange={(e) => setScheduleData(prev => ({
-                            ...prev,
-                            days: {
-                              ...prev.days,
-                              [currentDay]: {
-                                ...prev.days[currentDay],
-                                times: {
-                                  ...prev.days[currentDay].times,
+                      <input
+                        type="time"
+                        value={times.startTime}
+                        onChange={(e) => setScheduleData(prev => ({
+                          ...prev,
+                          days: {
+                            ...prev.days,
+                            [currentDay]: {
+                              ...prev.days[currentDay],
+                              times: {
+                                ...prev.days[currentDay].times,
                                   [blockKey]: { ...times, startTime: e.target.value }
-                                }
                               }
                             }
-                          }))}
-                          className="w-full px-3 py-2 bg-white/90 text-slate-900 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                        />
-                      </div>
-                      <div>
+                          }
+                        }))}
+                          disabled={locked}
+                          className={`w-full px-3 py-2 ${locked ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : 'bg-white/90 text-gray-900'} border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent`}
+                      />
+                    </div>
+                    <div>
                         <label className="block text-sm font-medium text-gray-700 mb-2">End Time</label>
-                        <input
-                          type="time"
-                          value={times.endTime}
-                          onChange={(e) => setScheduleData(prev => ({
-                            ...prev,
-                            days: {
-                              ...prev.days,
-                              [currentDay]: {
-                                ...prev.days[currentDay],
-                                times: {
-                                  ...prev.days[currentDay].times,
+                      <input
+                        type="time"
+                        value={times.endTime}
+                        onChange={(e) => setScheduleData(prev => ({
+                          ...prev,
+                          days: {
+                            ...prev.days,
+                            [currentDay]: {
+                              ...prev.days[currentDay],
+                              times: {
+                                ...prev.days[currentDay].times,
                                   [blockKey]: { ...times, endTime: e.target.value }
-                                }
                               }
                             }
-                          }))}
-                          className="w-full px-3 py-2 bg-white/90 text-slate-900 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                        />
-                      </div>
+                          }
+                        }))}
+                          disabled={locked}
+                          className={`w-full px-3 py-2 ${locked ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : 'bg-white/90 text-gray-900'} border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent`}
+                      />
                     </div>
                   </div>
+                </div>
                 );
               })}
             </div>
@@ -529,7 +695,11 @@ export default function SchedulePage() {
                 <span>Cancel</span>
               </button>
               <button
-                onClick={handleSaveTimes}
+                onClick={() => {
+                  const hasExisting = Array.isArray(dayBlocks) && dayBlocks.length > 0;
+                  if (hasExisting) { setCurrentStep('tasks'); return; }
+                  handleSaveTimes();
+                }}
                 className="inline-flex items-center space-x-2 px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
               >
                 <Save className="h-4 w-4" />
@@ -542,47 +712,126 @@ export default function SchedulePage() {
       case 'tasks':
         return (
           <div className="space-y-6">
-            <div className="text-center">
-              <h2 className="text-2xl font-bold text-gray-900 mb-2">Define Your Tasks</h2>
+            <div className="text-left">
+              <h2 className="text-2xl font-bold text-gray-900 mb-1">Define Your Tasks</h2>
               <p className="text-gray-600">Add tasks for each energy block</p>
             </div>
 
-            {/* Removed day selection per requirements */}
-
-            {/* Block Navigation with arrows */}
-            <div className="flex items-center justify-center space-x-4">
-              <button
-                onClick={() => setCurrentTaskBlock(prev => prev === 'high' ? 'low' : prev === 'medium' ? 'high' : 'medium')}
-                className="px-3 py-2 rounded-lg text-slate-900 hover:text-slate-700"
-                aria-label="Previous block"
-              >
-                ←
-              </button>
-              <div className="px-4 py-2 rounded-lg bg-white/70 backdrop-blur-sm border border-white/40 font-medium capitalize text-slate-900">
-                {currentTaskBlock} Energy
+            {/* Block Navigation pill */}
+            <div className="flex items-center justify-center">
+              <div className="flex items-center gap-6">
+                <button
+                  onClick={() => setCurrentTaskBlock(prev => prev === 'high' ? 'low' : prev === 'medium' ? 'high' : 'medium')}
+                  className="px-2 py-2 rounded-lg text-slate-900 hover:text-slate-700"
+                  aria-label="Previous block"
+                >
+                  ‹
+                </button>
+                <div className={`inline-flex items-center gap-2 px-5 py-3 rounded-xl border ${
+                  currentTaskBlock==='high' ? 'bg-emerald-50 border-emerald-200 text-emerald-800' :
+                  currentTaskBlock==='medium' ? 'bg-amber-50 border-amber-200 text-amber-800' :
+                  'bg-rose-50 border-rose-200 text-rose-800'
+                }`}>
+                  <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-white/80">
+                    {currentTaskBlock==='high' ? <Zap className="h-4 w-4"/> : currentTaskBlock==='medium' ? <Square className="h-4 w-4"/> : <Moon className="h-4 w-4"/>}
+                  </span>
+                  <span className="font-medium capitalize">{currentTaskBlock} Energy</span>
+            </div>
+                <button
+                  onClick={() => setCurrentTaskBlock(prev => prev === 'high' ? 'medium' : prev === 'medium' ? 'low' : 'high')}
+                  className="px-2 py-2 rounded-lg text-slate-900 hover:text-slate-700"
+                  aria-label="Next block"
+                >
+                  ›
+                </button>
               </div>
-              <button
-                onClick={() => setCurrentTaskBlock(prev => prev === 'high' ? 'medium' : prev === 'medium' ? 'low' : 'high')}
-                className="px-3 py-2 rounded-lg text-slate-900 hover:text-slate-700"
-                aria-label="Next block"
-              >
-                →
-              </button>
             </div>
 
-            {/* Current Block Tasks */}
+            {/* Quick add row */}
+            <div className="grid grid-cols-1 md:grid-cols-7 gap-3 items-end">
+              <div className="md:col-span-4">
+                <label className="block text-sm font-medium text-gray-700 mb-1">Task Name</label>
+                <input
+                  type="text"
+                  value={newTaskName}
+                  onChange={(e)=>{
+                    setNewTaskName(e.target.value);
+                  }}
+                  placeholder="Enter task name"
+                  className="w-full px-3 py-2 rounded-lg bg-white/90 border border-gray-300 text-slate-900 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                />
+              </div>
+              <div className="md:col-span-2">
+                <label className="block text-sm font-medium text-gray-700 mb-1">Duration</label>
+                <input
+                  type="number"
+                  value={newTaskDuration}
+                  onChange={(e)=>{
+                    const v = e.target.value === '' ? '' : Math.max(1, parseInt(e.target.value) || 0);
+                    setNewTaskDuration(v);
+                    if (v === '') { setNewTaskError(null); return; }
+                    const remaining = getCurrentBlockRemaining();
+                    if (typeof v === 'number' && v > remaining) {
+                      setNewTaskError(`Duration exceeds remaining time by ${v - remaining} min`);
+                    } else {
+                      setNewTaskError(null);
+                    }
+                  }}
+                  placeholder="Minutes"
+                  min={1}
+                  className="w-full px-3 py-2 rounded-lg bg-white/90 border border-gray-300 text-slate-900 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                />
+              </div>
+              <div className="md:col-span-1">
+                <button
+                  onClick={() => {
+                    if (!newTaskName || !newTaskDuration) return;
+                    const remaining = getCurrentBlockRemaining();
+                    const dur = typeof newTaskDuration === 'number' ? newTaskDuration : parseInt(String(newTaskDuration)) || 0;
+                    if (dur > remaining) {
+                      setNewTaskError(`Duration exceeds remaining time by ${dur - remaining} min`);
+                      return;
+                    }
+                    const newTask: Task = {
+                      id: Date.now().toString(),
+                      name: newTaskName,
+                      duration: dur,
+                      description: '',
+                      repeat: null,
+                      locked: false,
+                    };
+                    setScheduleData(prev => ({
+                      ...prev,
+                      days: {
+                        ...prev.days,
+                        [currentDay]: {
+                          ...prev.days[currentDay],
+                          tasks: {
+                            ...prev.days[currentDay].tasks,
+                            [currentTaskBlock]: [...prev.days[currentDay].tasks[currentTaskBlock], newTask]
+                          }
+                        }
+                      }
+                    }));
+                    setNewTaskName('');
+                    setNewTaskDuration('');
+                    setNewTaskError(null);
+                  }}
+                  className="w-full inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-slate-900 text-white hover:bg-slate-800"
+                >
+                  + <span>Add</span>
+                </button>
+              </div>
+              {newTaskError && (
+                <div className="md:col-span-7 text-sm text-red-600">{newTaskError}</div>
+              )}
+            </div>
+
+            {/* Existing editable list (click to edit preserved) */}
             <div className="bg-gray-50 rounded-lg p-6">
               <div className="flex justify-between items-center mb-4">
-                <h3 className="text-lg font-semibold text-gray-900 capitalize">
-                  {currentTaskBlock} Energy Tasks for {currentDay}
-                </h3>
-                <button
-                  onClick={addTask}
-                  className="inline-flex items-center space-x-2 px-3 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors"
-                >
-                  <Plus className="h-4 w-4" />
-                  <span>Add Task</span>
-                </button>
+                <h3 className="text-lg font-semibold text-gray-900">{currentDay}</h3>
+                <div className="text-sm text-gray-600">{scheduleData.days[currentDay].tasks[currentTaskBlock].length} task(s)</div>
               </div>
 
               <div className="space-y-4">
@@ -590,9 +839,7 @@ export default function SchedulePage() {
                   <div key={task.id} className="rounded-lg p-4 border border-white/30 bg-white/70 backdrop-blur-sm">
                     <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
                       <div className="md:col-span-2">
-                        <label className="block text-sm font-medium text-gray-700 mb-1">
-                          Task Name
-                        </label>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Task Name</label>
                         <input
                           type="text"
                           value={task.name}
@@ -602,9 +849,7 @@ export default function SchedulePage() {
                         />
                       </div>
                       <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">
-                          Duration (min)
-                        </label>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Duration (min)</label>
                         <input
                           type="number"
                           value={task.duration}
@@ -629,9 +874,7 @@ export default function SchedulePage() {
                       </div>
                     </div>
                     <div className="mt-3">
-                      <label className="block text-sm font-medium text-gray-700 mb-1">
-                        Description (Optional)
-                      </label>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Description (Optional)</label>
                       <textarea
                         value={task.description}
                         onChange={(e) => !task.locked && updateTask(task.id, 'description', e.target.value)}
@@ -645,7 +888,7 @@ export default function SchedulePage() {
               </div>
 
               <div className="flex justify-start items-center mt-6 text-sm text-gray-700">
-                Total duration: {scheduleData.days[currentDay].tasks[currentTaskBlock].reduce((sum, task) => sum + task.duration, 0)} minutes
+                  Total duration: {scheduleData.days[currentDay].tasks[currentTaskBlock].reduce((sum, task) => sum + task.duration, 0)} minutes
               </div>
             </div>
 
@@ -665,8 +908,8 @@ export default function SchedulePage() {
                   <span>Back</span>
                 </button>
                 <button
-                  onClick={() => hasAtLeastOnePerBlock() ? setCurrentStep('repeat') : setError('Add at least one task to each energy block before continuing.')}
-                  className={`inline-flex items-center space-x-2 px-4 py-2 rounded-lg transition-colors ${hasAtLeastOnePerBlock() ? 'bg-blue-600 text-white hover:bg-blue-700' : 'bg-gray-300 text-gray-600 cursor-not-allowed'}`}
+                  onClick={() => hasAtLeastOneTask() ? setCurrentStep('repeat') : setError('Add at least one task to any energy block before continuing.')}
+                  className={`inline-flex items-center space-x-2 px-4 py-2 rounded-lg transition-colors ${hasAtLeastOneTask() ? 'bg-slate-900 text-white hover:bg-slate-800' : 'bg-gray-300 text-gray-600 cursor-not-allowed'}`}
                 >
                   <span>Continue</span>
                   <ArrowRight className="h-4 w-4" />
@@ -801,55 +1044,62 @@ export default function SchedulePage() {
       const { data: profile } = await supabase.from('users').select('username').eq('id', uid).single();
       setUsername(profile?.username ?? null);
       const weekday = new Date().toLocaleString('en-US', { weekday: 'long' });
-      const { data: scheduleRow, error: sErr } = await supabase
+      const { data: schedule } = await supabase
         .from('schedules')
-        .select('id')
+        .select(`
+          id,
+          sessions (
+            id,
+            template:session_templates!inner ( id, energy_type, start_time, end_time ),
+            tasks ( id, name, description, duration_minutes, status )
+          )
+        `)
         .eq('user_id', uid)
         .eq('day_of_week', weekday)
         .single();
-      if (sErr || !scheduleRow) { setDayBlocks(null); return; }
-      const scheduleId = scheduleRow.id;
-      const { data: sessions, error: sessErr } = await supabase
-        .from('sessions')
-        .select('id, template_id')
-        .eq('schedule_id', scheduleId);
-      if (sessErr || !sessions) { setDayBlocks(null); return; }
-      const templateIds = sessions.map(s => s.template_id);
-      const { data: templates } = await supabase
-        .from('session_templates')
-        .select('id, energy_type, start_time, end_time')
-        .in('id', templateIds);
-      const tmplById = Object.fromEntries((templates || []).map(t => [t.id, t]));
-      const sessionIds = sessions.map(s => s.id);
-      const { data: tasks } = await supabase
-        .from('tasks')
-        .select('id, session_id, name, description, duration_minutes, status')
-        .in('session_id', sessionIds);
-      const tasksBySession: Record<number, any[]> = {};
-      (tasks || []).forEach(t => {
-        tasksBySession[t.session_id] = tasksBySession[t.session_id] || [];
-        tasksBySession[t.session_id].push(t);
-      });
-      const blocks = sessions.map(s => {
-        const tmpl = tmplById[s.template_id];
-        return {
-          energy: tmpl?.energy_type || 'High',
+      if (!schedule || !schedule.sessions) { setDayBlocks([]); return; }
+      const sorted = (schedule.sessions as any[])
+        .map((s:any) => ({
+          energy: s.template?.energy_type || 'High',
           sessionId: s.id,
-          start_time: tmpl?.start_time || '00:00',
-          end_time: tmpl?.end_time || '00:00',
-          tasks: tasksBySession[s.id] || []
-        };
-      }).sort((a,b) => (a.energy === 'High' ? 0 : a.energy === 'Medium' ? 1 : 2) - (b.energy === 'High' ? 0 : b.energy === 'Medium' ? 1 : 2));
-      setDayBlocks(blocks);
+          start_time: (s.template?.start_time as string) || '00:00',
+          end_time: (s.template?.end_time as string) || '00:00',
+          tasks: (s.tasks as any[]) || []
+        }))
+        .sort((a,b) => (a.energy === 'High' ? 0 : a.energy === 'Medium' ? 1 : 2) - (b.energy === 'High' ? 0 : b.energy === 'Medium' ? 1 : 2));
+      setDayBlocks(sorted);
+
+      // Prefill times with existing templates so they remain constant when editing
+      if (sorted && sorted.length === 3) {
+        const toHHMM = (t: string) => (t || '00:00').slice(0,5);
+        const find = (e: 'High'|'Medium'|'Low') => sorted.find(b => b.energy === e);
+        const high = find('High');
+        const med = find('Medium');
+        const low = find('Low');
+        setScheduleData(prev => ({
+          ...prev,
+          days: {
+            ...prev.days,
+            [currentDay]: {
+              ...prev.days[currentDay],
+              times: {
+                high: { startTime: toHHMM(high?.start_time || '00:00'), endTime: toHHMM(high?.end_time || '00:00') },
+                medium: { startTime: toHHMM(med?.start_time || '00:00'), endTime: toHHMM(med?.end_time || '00:00') },
+                low: { startTime: toHHMM(low?.start_time || '00:00'), endTime: toHHMM(low?.end_time || '00:00') }
+              }
+            }
+          }
+        }));
+      }
     } catch (e) {
       console.error('Failed to load day blocks', e);
-      setDayBlocks(null);
+      setDayBlocks([]);
     }
   };
 
   useEffect(() => { loadTodayBlocks(); }, []);
 
-  const updateTaskField = async (taskId: number, payload: Partial<{ name: string; description: string | null; duration_minutes: number | null; status: 'active'|'completed'|'skipped' }>) => {
+          const updateTaskField = async (taskId: number, payload: Partial<{ name: string; description: string | null; duration_minutes: number | null; status: 'active'|'completed'|'skipped' }>) => {
     try {
       const { data: sessionData } = await supabase.auth.getSession();
       const token = sessionData.session?.access_token;
@@ -864,59 +1114,141 @@ export default function SchedulePage() {
     } catch (e) { console.error(e); }
   };
 
+          const deleteTaskById = async (taskId: number) => {
+            try {
+              const { data: sessionData } = await supabase.auth.getSession();
+              const token = sessionData.session?.access_token;
+              if (!token) return;
+              await fetch(`/api/tasks?id=${taskId}`, {
+                method: 'DELETE',
+                headers: { Authorization: `Bearer ${token}` }
+              });
+              await loadTodayBlocks();
+              setEditingTaskId(null);
+            } catch (e) { console.error(e); }
+          };
+
   const BlocksView = () => {
     if (!dayBlocks) return null;
     return (
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        {dayBlocks.map(block => (
-          <div
-            key={block.sessionId}
-            className={`rounded-2xl p-4 backdrop-blur-sm border ${
-              block.energy === 'High' ? 'bg-emerald-50/70 border-emerald-200' :
-              block.energy === 'Medium' ? 'bg-amber-50/70 border-amber-200' :
-              'bg-rose-50/70 border-rose-200'
-            }`}
-          >
-            <div className="flex items-center justify-between mb-3">
-              <div className="font-semibold text-slate-900">{block.energy} Energy</div>
-            </div>
-            <div className="space-y-3">
-              {block.tasks.length === 0 && (
-                <div className="text-sm text-slate-600">No tasks for this block.</div>
-              )}
-              {block.tasks.map(t => (
-                <div key={t.id} className="rounded-lg border border-white/30 bg-white/80 p-3">
-                  {editingTaskId === t.id ? (
-                    <div className="space-y-2">
-                      <input defaultValue={t.name} onBlur={(e)=>updateTaskField(t.id,{ name: e.target.value })} className="w-full px-3 py-2 rounded bg-white/90 border border-gray-300 text-slate-900" />
-                      <textarea defaultValue={t.description || ''} onBlur={(e)=>updateTaskField(t.id,{ description: e.target.value || null })} rows={2} className="w-full px-3 py-2 rounded bg-white/90 border border-gray-300 text-slate-900" />
-                      <input type="number" defaultValue={t.duration_minutes || 0} onBlur={(e)=>updateTaskField(t.id,{ duration_minutes: parseInt(e.target.value)||0 })} className="w-full px-3 py-2 rounded bg-white/90 border border-gray-300 text-slate-900" />
-                      <div className="text-right">
-                        <button onClick={()=>setEditingTaskId(null)} className="px-3 py-1 text-sm text-slate-700">Done</button>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <div className="font-medium text-slate-900">{t.name}</div>
-                        {t.description && <div className="text-sm text-slate-600">{t.description}</div>}
-                        {typeof t.duration_minutes === 'number' && <div className="text-xs text-slate-500 mt-1">{t.duration_minutes} min</div>}
-                      </div>
-                      <button className="text-sm text-blue-700 hover:underline" onClick={()=>setEditingTaskId(t.id)}>Edit</button>
-                    </div>
-                  )}
+        {dayBlocks.map(block => {
+          const icon = block.energy === 'High' ? <Zap className="h-5 w-5 text-emerald-700" /> : block.energy === 'Medium' ? <Square className="h-5 w-5 text-amber-700" /> : <Moon className="h-5 w-5 text-rose-700" />;
+          const bg = block.energy === 'High' ? 'bg-emerald-50/70 border-emerald-200' : block.energy === 'Medium' ? 'bg-amber-50/70 border-amber-200' : 'bg-rose-50/70 border-rose-200';
+          const chip = `${block.energy === 'High' ? 'text-emerald-700 bg-emerald-100/80' : block.energy === 'Medium' ? 'text-amber-700 bg-amber-100/80' : 'text-rose-700 bg-rose-100/80'} inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium`;
+          return (
+            <div key={block.sessionId} className={`rounded-2xl p-6 backdrop-blur-sm border ${bg}`}>
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-2">
+                  <div className={`h-9 w-9 rounded-full flex items-center justify-center shadow-sm ${
+                    block.energy==='High'?'bg-emerald-100': block.energy==='Medium'?'bg-amber-100':'bg-rose-100'
+                  }`}>{icon}</div>
+                  <div className="font-semibold text-slate-900">{block.energy} Energy</div>
                 </div>
-              ))}
+                <div className="text-xs text-slate-700 flex items-center gap-2">
+                  <Clock className="h-4 w-4" />
+                    <button
+                    onClick={()=>{ setTimeEditEnergy(block.energy as any); setTimeEditStart((block.start_time||'00:00').slice(0,5)); setTimeEditEnd((block.end_time||'00:00').slice(0,5)); setShowTimeEdit(true); setTimeEditError(null); }}
+                    className="hover:underline"
+                    title="Edit times"
+                  >
+                    {formatRange((block.start_time||'00:00').slice(0,5),(block.end_time||'00:00').slice(0,5))}
+                    </button>
+                  </div>
+                  </div>
+                  
+              <div className="space-y-2">
+                {block.tasks.length === 0 ? (
+                  <div className="rounded-xl border border-white/30 bg-white/80 p-3 text-sm text-slate-600">No tasks for this block.</div>
+                ) : (
+                  block.tasks.map(t => (
+                    <div
+                      key={t.id}
+                      className={`rounded-xl border border-white/30 bg-white/80 p-3 ${editingTaskId !== t.id ? 'cursor-pointer' : ''} ${shakeTaskId===t.id ? 'animate-[shake_0.3s_ease-in-out]' : ''}`}
+                      onClick={() => { if (editingTaskId !== t.id) setEditingTaskId(t.id); }}
+                    >
+                      {editingTaskId === t.id ? (
+                        <div className="space-y-3">
+                          <div>
+                            <label className="block text-sm font-medium text-slate-800 mb-1">Task Name</label>
+                            <input
+                              defaultValue={t.name}
+                              onBlur={(e)=>updateTaskField(t.id,{ name: e.target.value })}
+                              className="w-full px-3 py-2 rounded bg-white/90 border border-gray-300 text-slate-900"
+                              aria-label="Task name"
+                            />
+                      </div>
+                          <div>
+                            <label className="block text-sm font-medium text-slate-800 mb-1">Description</label>
+                            <textarea
+                              defaultValue={t.description || ''}
+                              onBlur={(e)=>updateTaskField(t.id,{ description: e.target.value || null })}
+                              rows={2}
+                              className="w-full px-3 py-2 rounded bg-white/90 border border-gray-300 text-slate-900"
+                              aria-label="Task description"
+                            />
+                  </div>
+                          <div>
+                            <label className="block text-sm font-medium text-slate-800 mb-1">Duration (min)</label>
+                            <input
+                              type="number"
+                              defaultValue={t.duration_minutes || 0}
+                              onBlur={(e)=>{
+                                const val = parseInt(e.target.value)||0;
+                                const ok = validateDbEditDuration(block.energy as 'High'|'Medium'|'Low', t.id, val);
+                                if (!ok) {
+                                  setShakeTaskId(t.id);
+                                  setTimeout(()=> setShakeTaskId(null), 400);
+                                  e.target.value = String(t.duration_minutes||0);
+                                  return;
+                                }
+                                updateTaskField(t.id,{ duration_minutes: val });
+                              }}
+                              className="w-full px-3 py-2 rounded bg-white/90 border border-gray-300 text-slate-900"
+                              aria-label="Task duration in minutes"
+                              min={0}
+                            />
+                </div>
+                          <div className="flex items-center justify-end gap-3">
+                            <button onClick={() => {
+                              if (window.confirm('Delete this task?')) { deleteTaskById(t.id); }
+                            }} className="px-3 py-1 text-sm text-red-600 hover:text-red-700">Delete</button>
+                            <button onClick={() => setEditingTaskId(null)} className="px-3 py-1 text-sm text-slate-700">Done</button>
             </div>
-          </div>
-        ))}
+                        </div>
+                      ) : (
+                        <div className="flex items-center justify-between">
+                          <div className="font-medium text-slate-900 truncate max-w-[70%]">{t.name}</div>
+                          <span className={chip}>{(t.duration_minutes||0)} min</span>
+                </div>
+                      )}
+            </div>
+                  ))
+                )}
+        </div>
+
+              <div className="mt-6 flex items-center justify-between text-sm text-slate-700">
+                <div>{block.tasks.length} {block.tasks.length === 1 ? 'task' : 'tasks'}</div>
+                <div className="font-medium text-slate-900">{Math.max(0, block.tasks.reduce((a,t)=>a+(t.duration_minutes||0),0))} min total</div>
+        </div>
+            </div>
+          );
+        })}
       </div>
     );
   };
 
   return (
     <AuthGuard>
-    <div className={`min-h-screen gradient-transition animated-gradient ${getBlockTheme(currentBlock)} relative overflow-hidden`}>
+    <div className={`min-h-screen gradient-transition ${
+      Array.isArray(dayBlocks) && dayBlocks.length === 3
+        ? getEnergyThemeForNow([
+            { energy: 'High', start: dayBlocks.find(b=>b.energy==='High')?.start_time || '00:00', end: dayBlocks.find(b=>b.energy==='High')?.end_time || '00:00' },
+            { energy: 'Medium', start: dayBlocks.find(b=>b.energy==='Medium')?.start_time || '00:00', end: dayBlocks.find(b=>b.energy==='Medium')?.end_time || '00:00' },
+            { energy: 'Low', start: dayBlocks.find(b=>b.energy==='Low')?.start_time || '00:00', end: dayBlocks.find(b=>b.energy==='Low')?.end_time || '00:00' }
+          ])
+        : getBlockTheme(currentBlock)
+    } relative overflow-hidden`}>
       <div className="grain-overlay"></div>
       
       <main className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-10 pt-24">
@@ -938,8 +1270,32 @@ export default function SchedulePage() {
           </div>
         )}
 
-        {dayBlocks !== null ? (
+        {dayBlocks === undefined ? (
+          <div className="max-w-6xl mx-auto grid grid-cols-1 md:grid-cols-3 gap-6">
+            {[0,1,2].map(i => (
+              <div key={i} className="rounded-2xl p-4 border border-white/30 bg-white/60 backdrop-blur-sm">
+                <div className="w-32 h-5 mb-3"><Skeleton className="h-5" /></div>
+                <div className="space-y-3">
+                  {[0,1,2].map(j => (
+                    <div key={j} className="rounded-lg border border-white/30 bg-white/80 p-3">
+                      <Skeleton className="h-4 mb-2" />
+                      <Skeleton className="h-3 w-1/2" />
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : dayBlocks.length > 0 ? (
           <div className="max-w-6xl mx-auto">
+            <div className="flex justify-end mb-4">
+              <button
+                onClick={() => { setCurrentStep('tasks'); setShowModal(true); }}
+                className="inline-flex items-center space-x-2 px-4 py-2 bg-white/70 backdrop-blur-sm border border-white/30 rounded-lg text-slate-900 hover:bg-white"
+              >
+                <span>Edit Schedule</span>
+              </button>
+            </div>
             <BlocksView />
           </div>
         ) : (
@@ -985,6 +1341,110 @@ export default function SchedulePage() {
             >
               <div className="p-6">
                 {renderModalContent()}
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Time Edit Modal */}
+      <AnimatePresence>
+        {showTimeEdit && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-[60]"
+          >
+            <motion.div
+              initial={{ scale: 0.98, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.98, opacity: 0 }}
+              className="rounded-2xl shadow-xl max-w-md w-full bg-white/90 backdrop-blur-md border border-white/30"
+            >
+              <div className="p-6">
+                <div className="mb-4">
+                  <h3 className="text-lg font-semibold text-slate-900">Edit {timeEditEnergy || ''} Block</h3>
+                  <p className="text-sm text-slate-600">Update start and end times</p>
+                </div>
+                {timeEditError && (
+                  <div className="mb-3 text-sm text-red-600">{timeEditError}</div>
+                )}
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-slate-800 mb-1">Start Time</label>
+                    <input type="time" value={timeEditStart} onChange={(e)=> setTimeEditStart(e.target.value)} className="w-full px-3 py-2 rounded-lg bg-white/90 border border-gray-300 text-slate-900" />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-800 mb-1">End Time</label>
+                    <input type="time" value={timeEditEnd} onChange={(e)=> setTimeEditEnd(e.target.value)} className="w-full px-3 py-2 rounded-lg bg-white/90 border border-gray-300 text-slate-900" />
+                  </div>
+                </div>
+                <div className="mt-6 flex justify-end gap-3">
+                  <button onClick={()=> { setShowTimeEdit(false); setTimeEditEnergy(null); }} className="px-4 py-2 text-slate-700 hover:text-slate-900">Cancel</button>
+                  <button
+                    onClick={async ()=>{
+                      if (!timeEditEnergy) return;
+                      const key = timeEditEnergy.toLowerCase() as 'high'|'medium'|'low';
+                      const nextTimes = { ...scheduleData.days[currentDay].times } as any;
+                      // basic validation
+                      const toMin = (t:string)=>{ const [h,m]=t.split(':').map(Number); return h*60+m; };
+                      if (!(toMin(timeEditEnd) > toMin(timeEditStart))) { setTimeEditError('End time must be after start time.'); return; }
+                      nextTimes[key] = { startTime: timeEditStart, endTime: timeEditEnd };
+                      // Adjust adjacent automatically to remove overlaps
+                      const adjusted = adjustAdjacentForChange({ high: nextTimes.high, medium: nextTimes.medium, low: nextTimes.low }, timeEditEnergy, timeEditStart, timeEditEnd);
+                      setScheduleData(prev=>({ ...prev, days: { ...prev.days, [currentDay]: { ...prev.days[currentDay], times: adjusted } } }));
+                      await applyTemplateTimesToBackend(adjusted);
+                      await loadTodayBlocks();
+                      setShowTimeEdit(false);
+                      setTimeEditEnergy(null);
+                      setSuccess('Schedule updated to prevent overlapping times.');
+                      setTimeout(()=> setSuccess(null), 2000);
+                    }}
+                    className="px-4 py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700"
+                  >Save</button>
+                </div>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Duration Overfill Themed Popup */}
+      <AnimatePresence>
+        {showDurationOverfill?.open && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/60 flex items-center justify-center p-4 z-[70]"
+          >
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="max-w-md w-full rounded-2xl shadow-xl bg-white/90 backdrop-blur-md border border-white/30"
+            >
+              <div className="p-6">
+                <h3 className="text-lg font-semibold text-slate-900 mb-2">Not enough time in this block</h3>
+                <p className="text-slate-700 mb-4">The total duration of all tasks exceeds the available time for this energy block.</p>
+                <div className="space-y-2 text-slate-800">
+                  <div className="flex items-start gap-2">
+                    <span className="mt-1 h-1.5 w-1.5 rounded-full bg-slate-500"></span>
+                    <span>Change the duration of the energy block</span>
+                  </div>
+                  <div className="flex items-start gap-2">
+                    <span className="mt-1 h-1.5 w-1.5 rounded-full bg-slate-500"></span>
+                    <span>Change the duration of some tasks</span>
+                  </div>
+                  <div className="flex items-start gap-2">
+                    <span className="mt-1 h-1.5 w-1.5 rounded-full bg-slate-500"></span>
+                    <span>Delete some tasks from the block</span>
+                  </div>
+                </div>
+                <div className="mt-6 flex justify-end">
+                  <button onClick={()=> setShowDurationOverfill({ open: false, block: null })} className="px-4 py-2 rounded-lg bg-slate-900 text-white hover:bg-slate-800">Close</button>
+                </div>
               </div>
             </motion.div>
           </motion.div>
@@ -1038,27 +1498,13 @@ export default function SchedulePage() {
         <div className="h-16 flex items-center px-4 border-b border-gray-200">
           <span className="font-semibold text-gray-900">AI Insights</span>
           <button className="ml-auto text-gray-500 hover:text-gray-700" onClick={() => setInsightsOpen(false)}>Close</button>
-        </div>
+    </div>
         <div className="p-4 overflow-y-auto">
           <AIWidget />
         </div>
       </div>
 
-      {/* Three-dot menu top-right */}
-      {!insightsOpen && (
-        <button
-          onClick={() => setInsightsOpen(true)}
-          className="fixed top-4 right-4 z-40 text-white hover:opacity-80 transition-opacity p-2"
-          aria-label="Open menu"
-        >
-          <span className="sr-only">Open insights</span>
-          <div className="flex items-center justify-center space-x-1.5">
-            <span className="block h-1.5 w-1.5 bg-white rounded-full"></span>
-            <span className="block h-1.5 w-1.5 bg-white rounded-full"></span>
-            <span className="block h-1.5 w-1.5 bg-white rounded-full"></span>
-          </div>
-        </button>
-      )}
+      {/* No floating insights toggle on Schedule page (only on Home) */}
     </div>
     </AuthGuard>
   );

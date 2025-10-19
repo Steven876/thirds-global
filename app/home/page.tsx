@@ -11,7 +11,7 @@
 
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { motion } from 'framer-motion';
 import Navbar from '@/components/Navbar';
 import AuthGuard from '@/components/AuthGuard';
@@ -21,8 +21,8 @@ import TaskList from '@/components/TaskList';
 // Control buttons will be inline here (Skip/Complete)
 import AIWidget from '@/components/AIWidget';
 import ErrorMessage from '@/components/ErrorMessage';
-import { getCurrentBlock, getEnergyMessage, formatRange, getBlockTheme, getBlockTextColors } from '@/lib/time';
-import { Pause, SkipForward, Play } from 'lucide-react';
+import { getCurrentBlock, getEnergyMessage, formatRange, getBlockTheme, getBlockTextColors, getEnergyThemeForNow } from '@/lib/time';
+import { Pause, SkipForward, Play, ArrowRight } from 'lucide-react';
 import { EnergyLevel, TaskItem } from '@/lib/types';
 import { supabase } from '@/lib/supabaseClient';
 
@@ -39,6 +39,11 @@ export default function HomePage() {
   const [lastBlockEndMinutesState, setLastBlockEndMinutesState] = useState<number | null>(null);
   const [currentBlockRange, setCurrentBlockRange] = useState<string | null>(null);
   const [currentEnergyLabel, setCurrentEnergyLabel] = useState<'High'|'Medium'|'Low' | null>(null);
+  const [activeEndMinutes, setActiveEndMinutes] = useState<number | null>(null);
+  const [motivation, setMotivation] = useState<string | null>(null);
+  const [energyTheme, setEnergyTheme] = useState<string | null>(null);
+  const playClickTimer = useRef<number | null>(null);
+  const [isOutsideBlock, setIsOutsideBlock] = useState(false);
 
   // Mock task data
   const [tasks, setTasks] = useState<TaskItem[]>([]);
@@ -79,10 +84,10 @@ export default function HomePage() {
     return 24 * 60 - 1; // 23:59 for night
   };
 
-  const allTasksDone = tasks.every(t => t.done);
+  const allTasksDone = tasks.length > 0 && tasks.every(t => t.done || t.status === 'completed' || t.status === 'skipped');
   const lastBlockEndMinutes = lastBlockEndMinutesState ?? 22 * 60; // fallback to 22:00 if unknown
   const isAfterLastBlockEnd = getNowMinutes() >= lastBlockEndMinutes;
-  const dayEnded = allTasksDone || isAfterLastBlockEnd;
+  const dayEnded = allTasksDone || isAfterLastBlockEnd || isOutsideBlock;
   const displayCurrentTask = dayEnded ? (allTasksDone ? 'Tasks completed' : 'Tasks have ended') : currentTask;
   const displayNextTask = dayEnded ? 'No upcoming tasks' : nextTask;
 
@@ -98,7 +103,20 @@ export default function HomePage() {
     load();
   }, []);
 
-  // Load today's tasks from DB for the current block
+  // Helper: figure out active session by local device time
+  const computeActiveSession = (sessions: any[]): { session: any | null; startMin: number | null; endMin: number | null } => {
+    const toMin = (t:string) => { const [h,m] = t.split(':').map(Number); return h*60+m; };
+    const now = new Date();
+    const nowMin = now.getHours()*60 + now.getMinutes();
+    for (const s of sessions) {
+      const st = toMin((s.template?.start_time as string) || '00:00');
+      const en = toMin((s.template?.end_time as string) || '00:00');
+      if (st <= nowMin && nowMin < en) return { session: s, startMin: st, endMin: en };
+    }
+    return { session: null, startMin: null, endMin: null };
+  };
+
+  // Load today's schedule (joined select) and pick the current block's tasks
   useEffect(() => {
     const loadTasks = async () => {
       try {
@@ -106,51 +124,56 @@ export default function HomePage() {
         const uid = sessionData.session?.user?.id;
         if (!uid) return;
         const weekday = new Date().toLocaleString('en-US', { weekday: 'long' });
-        const { data: scheduleRow } = await supabase
+        const { data: schedule } = await supabase
           .from('schedules')
-          .select('id')
+          .select(`
+            id,
+            sessions (
+              id,
+              template:session_templates!inner ( id, energy_type, start_time, end_time ),
+              tasks ( id, name, description, duration_minutes, status )
+            )
+          `)
           .eq('user_id', uid)
           .eq('day_of_week', weekday)
           .single();
-        if (!scheduleRow) { setTasks([]); return; }
-        const { data: sessions } = await supabase
-          .from('sessions')
-          .select('id, template_id')
-          .eq('schedule_id', scheduleRow.id);
-        if (!sessions) { setTasks([]); return; }
-        const templateIds = sessions.map(s => s.template_id);
-        const { data: templates } = await supabase
-          .from('session_templates')
-          .select('id, energy_type, start_time, end_time')
-          .in('id', templateIds);
-        const tmplById: Record<number, { id:number; energy_type:'High'|'Medium'|'Low'; start_time:string; end_time:string }> = Object.fromEntries((templates||[]).map(t=>[t.id, t]));
-        // compute last block end (max end among templates)
+        if (!schedule || !schedule.sessions) { setTasks([]); setEnergyTheme(null); setIsOutsideBlock(false); return; }
         const toMin = (t:string) => { const [h,m] = t.split(':').map(Number); return h*60+m; };
-        const endMins = (templates||[]).map(t=>toMin(t.end_time)).filter(n=>!Number.isNaN(n));
+        const endMins = (schedule.sessions as any[]).map((s:any)=> toMin((s.template?.end_time as string) || '0:0')).filter((n:number)=>!Number.isNaN(n));
         if (endMins.length) setLastBlockEndMinutesState(Math.max(...endMins));
-        // pick the session matching currentBlock
-        const wantedEnergy = currentBlock === 'morning' ? 'High' : currentBlock === 'afternoon' ? 'Medium' : 'Low';
-        const targetSession = sessions.find(s => tmplById[s.template_id]?.energy_type === wantedEnergy);
-        if (!targetSession) { setTasks([]); return; }
-        const tmpl = tmplById[targetSession.template_id];
-        setCurrentBlockRange(formatRange(tmpl.start_time.slice(0,5), tmpl.end_time.slice(0,5)));
-        setCurrentEnergyLabel(tmpl.energy_type);
-        const { data: dbTasks } = await supabase
-          .from('tasks')
-          .select('id, name, description, duration_minutes, status')
-          .eq('session_id', targetSession.id)
-          .order('id', { ascending: true });
+        const { session: active, startMin, endMin } = computeActiveSession(schedule.sessions as any[]);
+        setIsOutsideBlock(!active);
+        if (!active || !endMin) { setTasks([]); setActiveEndMinutes(null); return; }
+        setActiveEndMinutes(endMin);
+        setCurrentBlockRange(formatRange(((active.template?.start_time as string)||'00:00').slice(0,5), ((active.template?.end_time as string)||'00:00').slice(0,5)));
+        setCurrentEnergyLabel((active.template?.energy_type as any) || null);
+        const dbTasks = (active.tasks as any[]) || [];
         const energyMap = { High: 'high', Medium: 'medium', Low: 'low' } as const;
-        const mapped: TaskItem[] = (dbTasks||[]).map(t => ({
+        const mapped: TaskItem[] = (dbTasks||[]).map((t:any) => ({
           id: t.id,
           label: t.name,
-          range: formatRange(tmpl.start_time.slice(0,5), tmpl.end_time.slice(0,5)),
-          energy: energyMap[tmpl.energy_type],
+          range: formatRange(((active.template?.start_time as string)||'00:00').slice(0,5), ((active.template?.end_time as string)||'00:00').slice(0,5)),
+          energy: energyMap[((active.template?.energy_type as string) || 'Low') as 'High'|'Medium'|'Low'],
           done: t.status === 'completed',
-          status: t.status as any
+          status: t.status
         }));
         setTasks(mapped);
+        // Derive energy theme from today's templates
+        try {
+          const templates = (schedule.sessions as any[]).map((s:any)=> ({
+            energy: (s.template?.energy_type as 'High'|'Medium'|'Low') || 'Low',
+            start: (s.template?.start_time as string) || '00:00',
+            end: (s.template?.end_time as string) || '00:00'
+          }));
+          setEnergyTheme(getEnergyThemeForNow(templates));
+        } catch { setEnergyTheme(null); }
         setCurrentTaskIndex(0);
+        // Initialize timer remaining based on local time and active end
+        const now2 = new Date();
+        const nowSec = now2.getHours()*3600 + now2.getMinutes()*60 + now2.getSeconds();
+        const rem = Math.max(0, endMin*60 - nowSec);
+        setTimeRemaining(rem);
+        setIsTimerFrozen(false);
       } catch (e) {
         console.error('Failed to load tasks', e);
         setTasks([]);
@@ -159,29 +182,43 @@ export default function HomePage() {
     loadTasks();
   }, [currentBlock]);
 
+  // Fetch AI motivational line (based on energy + last day/week metrics)
+  useEffect(() => {
+    const loadMotivation = async () => {
+      try {
+        const res = await fetch('/api/insights');
+        const js = await res.json();
+        if (js?.ok && js?.data?.motivation) setMotivation(js.data.motivation);
+        else if (Array.isArray(js?.data?.suggestions) && js.data.suggestions.length) setMotivation(js.data.suggestions[0]);
+      } catch {
+        setMotivation(null);
+      }
+    };
+    loadMotivation();
+  }, [currentBlock]);
+
   // Timer countdown with freeze/pause conditions
   useEffect(() => {
     if (isTimerFrozen || isPaused) return; // do not tick when frozen/paused
-    if (allTasksDone || isAfterLastBlockEnd) {
+    if (allTasksDone || isAfterLastBlockEnd || isOutsideBlock) {
       setTimeRemaining(0);
       setIsTimerFrozen(true);
       return;
     }
 
     const tick = () => {
+      setTimeRemaining(prev => (prev <= 0 ? 0 : prev - 1));
       const nowMin = getNowMinutes();
-      const endMin = getBlockEndMinutes(currentBlock);
-      if (nowMin >= endMin || nowMin >= lastBlockEndMinutes) {
+      const endMin = activeEndMinutes ?? getBlockEndMinutes(currentBlock);
+      if ((endMin && nowMin >= endMin) || (lastBlockEndMinutes && nowMin >= lastBlockEndMinutes)) {
         setTimeRemaining(0);
         setIsTimerFrozen(true);
-        return;
       }
-      setTimeRemaining(prev => (prev <= 0 ? 0 : prev - 1));
     };
 
     const timer = setInterval(tick, 1000);
     return () => clearInterval(timer);
-  }, [currentBlock, isTimerFrozen, isPaused, allTasksDone, isAfterLastBlockEnd]);
+  }, [currentBlock, isTimerFrozen, isPaused, allTasksDone, isAfterLastBlockEnd, isOutsideBlock, activeEndMinutes, lastBlockEndMinutes]);
 
   const handleTaskComplete = () => {
     setTimeRemaining(25 * 60); // Reset timer
@@ -237,12 +274,44 @@ export default function HomePage() {
     setIsPaused(p => !p);
   };
 
+  // Single vs double click on Play/Continue: single resumes, double completes current task
+  const handlePlayClick = () => {
+    if (playClickTimer.current !== null) {
+      window.clearTimeout(playClickTimer.current);
+      playClickTimer.current = null;
+      // Treat as double click → complete task
+      handleComplete();
+      return;
+    }
+    playClickTimer.current = window.setTimeout(() => {
+      if (!isOutsideBlock) {
+        if (isTimerFrozen) setIsTimerFrozen(false);
+        setIsPaused(false);
+      }
+      playClickTimer.current = null;
+    }, 220);
+  };
+
   const textColors = getBlockTextColors(currentBlock);
+  const effectiveMotivation = isOutsideBlock
+    ? 'Outside all blocks — use this time to rest.'
+    : (motivation || getEnergyMessage(energyLevel));
+
+  const controlsDisabled = dayEnded || tasks.length === 0;
+
+  // Lock body scroll when sidebar open
+  useEffect(() => {
+    if (insightsOpen) {
+      const prev = document.body.style.overflow;
+      document.body.style.overflow = 'hidden';
+      return () => { document.body.style.overflow = prev; };
+    }
+  }, [insightsOpen]);
 
   return (
     <AuthGuard>
     <ScheduleGuard>
-    <div className={`min-h-screen gradient-transition animated-gradient ${getBlockTheme(currentBlock)} relative overflow-hidden`}>
+    <div className={`min-h-screen gradient-transition ${energyTheme || getBlockTheme(currentBlock)} relative overflow-hidden`}>
       <div className="grain-overlay"></div>
       
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 pt-24">
@@ -263,58 +332,61 @@ export default function HomePage() {
             Good {currentBlock === 'morning' ? 'Morning' : currentBlock === 'afternoon' ? 'Afternoon' : 'Night'}{username ? `, ${username}` : ''}!
           </h1>
           <p className={`text-lg ${textColors.secondary} mb-4`}>
-            {getEnergyMessage(energyLevel)}
+            {effectiveMotivation}
           </p>
           <div className="inline-flex items-center space-x-2 px-4 py-2 bg-white/60 rounded-lg backdrop-blur-sm shadow-sm">
             <span className="text-sm font-medium text-gray-700">Current Block:</span>
             <span className="text-sm font-semibold text-gray-900">
-              {isAfterLastBlockEnd ? 'All blocks completed' : (currentEnergyLabel || (energyLevel.charAt(0).toUpperCase()+energyLevel.slice(1)))}{!isAfterLastBlockEnd && currentBlockRange ? ` • ${currentBlockRange}` : ''}
+              {isOutsideBlock ? 'Outside all blocks — rest' : isAfterLastBlockEnd ? 'All blocks completed' : (currentEnergyLabel || (energyLevel.charAt(0).toUpperCase()+energyLevel.slice(1)))}
+              {!isOutsideBlock && !isAfterLastBlockEnd && currentBlockRange ? ` • ${currentBlockRange}` : ''}
             </span>
           </div>
         </motion.div>
 
         {/* Centered Timer Section */}
-        <motion.div
+          <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.6, delay: 0.2 }}
+            transition={{ duration: 0.6, delay: 0.2 }}
           className="flex flex-col items-center justify-center"
         >
           {/* Current Task above */}
           <div className="text-center mb-4">
-            <div className={`text-sm ${textColors.secondary}`}>Current task</div>
-            <div className={`text-xl font-semibold ${textColors.primary}`}>{displayCurrentTask}</div>
+            <div className={`text-sm ${textColors.secondary}`}>{dayEnded ? 'Status' : 'Current task'}</div>
+            <div className={`text-xl font-semibold ${textColors.primary}`}>
+              {dayEnded ? (allTasksDone ? 'All tasks completed' : 'Outside all blocks') : displayCurrentTask}
+            </div>
           </div>
 
           {/* Timer (no white background) */}
           <div className="rounded-full">
-            <CircularTimer
-              currentTask={currentTask}
-              timeRemainingSec={timeRemaining}
-              energyLevel={energyLevel}
-              onComplete={handleTaskComplete}
-            />
+              <CircularTimer
+                currentTask={currentTask}
+                timeRemainingSec={timeRemaining}
+                energyLevel={energyLevel}
+                onComplete={handleTaskComplete}
+              />
           </div>
 
           {/* Next Task below */}
           <div className="text-center mt-6">
             <div className={`text-xs ${textColors.secondary}`}>Next</div>
             <div className={`text-lg font-medium ${textColors.primary}`}>{displayNextTask}</div>
-          </div>
+              </div>
 
           {/* Controls: Pause / Skip / Continue (icons) */}
           <div className="mt-8 flex items-center gap-6">
-            <button onClick={handlePauseToggle} className="h-12 w-12 rounded-full bg-white/70 backdrop-blur-sm border border-white/30 flex items-center justify-center text-slate-900 hover:bg-white" aria-label="Pause/Resume">
+            <button onClick={handlePauseToggle} disabled={controlsDisabled} className="h-12 w-12 rounded-full bg-white/70 backdrop-blur-sm border border-white/30 flex items-center justify-center text-slate-900 hover:bg-white disabled:opacity-50 disabled:cursor-not-allowed" aria-label="Pause/Resume">
               {isPaused ? <Play className="h-5 w-5" /> : <Pause className="h-5 w-5" />}
             </button>
-            <button onClick={handleSkip} className="h-12 w-12 rounded-full bg-white/70 backdrop-blur-sm border border-white/30 flex items-center justify-center text-slate-900 hover:bg-white" aria-label="Skip">
+            <button onClick={handleSkip} disabled={controlsDisabled} className="h-12 w-12 rounded-full bg-white/70 backdrop-blur-sm border border-white/30 flex items-center justify-center text-slate-900 hover:bg-white disabled:opacity-50 disabled:cursor-not-allowed" aria-label="Skip">
               <SkipForward className="h-5 w-5" />
             </button>
-            <button onClick={()=>{ if (isTimerFrozen){ setIsTimerFrozen(false); } setIsPaused(false); }} className="h-12 w-12 rounded-full bg-white/70 backdrop-blur-sm border border-white/30 flex items-center justify-center text-slate-900 hover:bg-white" aria-label="Continue">
-              <Play className="h-5 w-5" />
+            <button onClick={handleComplete} disabled={controlsDisabled} className="h-12 w-12 rounded-full bg-black text-white shadow-md flex items-center justify-center hover:bg-black/90 disabled:opacity-50 disabled:cursor-not-allowed" aria-label="Complete and next task">
+              <ArrowRight className="h-5 w-5" />
             </button>
-          </div>
-        </motion.div>
+            </div>
+          </motion.div>
 
         {/* Hidden task list for now; can add below if needed */}
       </main>
@@ -325,7 +397,7 @@ export default function HomePage() {
           <span className="font-semibold text-gray-900">AI Insights</span>
           <button className="ml-auto text-gray-500 hover:text-gray-700" onClick={() => setInsightsOpen(false)}>Close</button>
         </div>
-        <div className="p-4 overflow-y-auto">
+        <div className="p-4 overflow-y-auto h-[calc(100%-4rem)] overscroll-contain">
           <div className="mb-6">
             <h3 className="text-sm font-semibold text-gray-900 mb-3">Today's Tasks</h3>
             <ul className="space-y-2">
@@ -357,23 +429,23 @@ export default function HomePage() {
               ))}
             </ul>
           </div>
-          <AIWidget />
+            <AIWidget />
         </div>
-      </div>
+        </div>
 
-      {/* Floating menu button to open insights */}
+      {/* Floating menu button to open insights (Home only) */}
       {!insightsOpen && (
         <button
           onClick={() => setInsightsOpen(true)}
-          className="fixed top-4 right-4 z-40 text-white hover:opacity-80 transition-opacity p-2"
+          className="fixed top-4 right-4 z-40 text-black hover:opacity-80 transition-opacity p-2"
           aria-label="Open menu"
         >
           <span className="sr-only">Open insights</span>
           {/* Three-dot icon (no circle background) */}
           <div className="flex items-center justify-center space-x-1.5">
-            <span className="block h-1.5 w-1.5 bg-white rounded-full"></span>
-            <span className="block h-1.5 w-1.5 bg-white rounded-full"></span>
-            <span className="block h-1.5 w-1.5 bg-white rounded-full"></span>
+            <span className="block h-1.5 w-1.5 bg-black rounded-full"></span>
+            <span className="block h-1.5 w-1.5 bg-black rounded-full"></span>
+            <span className="block h-1.5 w-1.5 bg-black rounded-full"></span>
           </div>
         </button>
       )}
