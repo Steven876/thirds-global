@@ -576,7 +576,7 @@ export default function SchedulePage() {
                     {currentTaskBlock==='high' ? <Zap className="h-4 w-4"/> : currentTaskBlock==='medium' ? <Square className="h-4 w-4"/> : <Moon className="h-4 w-4"/>}
                   </span>
                   <span className="font-medium capitalize">{currentTaskBlock} Energy</span>
-                </div>
+            </div>
                 <button
                   onClick={() => setCurrentTaskBlock(prev => prev === 'high' ? 'medium' : prev === 'medium' ? 'low' : 'high')}
                   className="px-2 py-2 rounded-lg text-slate-900 hover:text-slate-700"
@@ -706,7 +706,7 @@ export default function SchedulePage() {
               </div>
 
               <div className="flex justify-start items-center mt-6 text-sm text-gray-700">
-                Total duration: {scheduleData.days[currentDay].tasks[currentTaskBlock].reduce((sum, task) => sum + task.duration, 0)} minutes
+                  Total duration: {scheduleData.days[currentDay].tasks[currentTaskBlock].reduce((sum, task) => sum + task.duration, 0)} minutes
               </div>
             </div>
 
@@ -983,18 +983,18 @@ export default function SchedulePage() {
                           />
                           <div className="text-right">
                             <button onClick={() => setEditingTaskId(null)} className="px-3 py-1 text-sm text-slate-700">Done</button>
-                          </div>
-                        </div>
+                      </div>
+                  </div>
                       ) : (
                         <div className="flex items-center justify-between">
                           <div className="font-medium text-slate-900 truncate max-w-[70%]">{t.name}</div>
                           <span className={chip}>{(t.duration_minutes||0)} min</span>
-                        </div>
+                </div>
                       )}
-                    </div>
+            </div>
                   ))
                 )}
-              </div>
+        </div>
 
               <div className="mt-6 flex items-center justify-between text-sm text-slate-700">
                 <div>{block.tasks.length} {block.tasks.length === 1 ? 'task' : 'tasks'}</div>
@@ -1169,21 +1169,7 @@ export default function SchedulePage() {
         </div>
       </div>
 
-      {/* Three-dot menu top-right */}
-      {!insightsOpen && (
-        <button
-          onClick={() => setInsightsOpen(true)}
-          className="fixed top-4 right-4 z-40 text-white hover:opacity-80 transition-opacity p-2"
-          aria-label="Open menu"
-        >
-          <span className="sr-only">Open insights</span>
-          <div className="flex items-center justify-center space-x-1.5">
-            <span className="block h-1.5 w-1.5 bg-white rounded-full"></span>
-            <span className="block h-1.5 w-1.5 bg-white rounded-full"></span>
-            <span className="block h-1.5 w-1.5 bg-white rounded-full"></span>
-          </div>
-        </button>
-      )}
+      {/* No floating insights toggle on Schedule page (only on Home) */}
     </div>
     </AuthGuard>
   );

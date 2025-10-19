@@ -11,7 +11,7 @@
 
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { motion } from 'framer-motion';
 import Navbar from '@/components/Navbar';
 import AuthGuard from '@/components/AuthGuard';
@@ -21,7 +21,7 @@ import TaskList from '@/components/TaskList';
 // Control buttons will be inline here (Skip/Complete)
 import AIWidget from '@/components/AIWidget';
 import ErrorMessage from '@/components/ErrorMessage';
-import { getCurrentBlock, getEnergyMessage, formatRange, getBlockTheme, getBlockTextColors } from '@/lib/time';
+import { getCurrentBlock, getEnergyMessage, formatRange, getBlockTheme, getBlockTextColors, getEnergyThemeForNow } from '@/lib/time';
 import { Pause, SkipForward, Play } from 'lucide-react';
 import { EnergyLevel, TaskItem } from '@/lib/types';
 import { supabase } from '@/lib/supabaseClient';
@@ -40,6 +40,8 @@ export default function HomePage() {
   const [currentBlockRange, setCurrentBlockRange] = useState<string | null>(null);
   const [currentEnergyLabel, setCurrentEnergyLabel] = useState<'High'|'Medium'|'Low' | null>(null);
   const [motivation, setMotivation] = useState<string | null>(null);
+  const [energyTheme, setEnergyTheme] = useState<string | null>(null);
+  const playClickTimer = useRef<number | null>(null);
 
   // Mock task data
   const [tasks, setTasks] = useState<TaskItem[]>([]);
@@ -120,7 +122,7 @@ export default function HomePage() {
           .eq('user_id', uid)
           .eq('day_of_week', weekday)
           .single();
-        if (!schedule || !schedule.sessions) { setTasks([]); return; }
+        if (!schedule || !schedule.sessions) { setTasks([]); setEnergyTheme(null); return; }
         const toMin = (t:string) => { const [h,m] = t.split(':').map(Number); return h*60+m; };
         const endMins = (schedule.sessions as any[]).map((s:any)=> toMin((s.template?.end_time as string) || '0:0')).filter((n:number)=>!Number.isNaN(n));
         if (endMins.length) setLastBlockEndMinutesState(Math.max(...endMins));
@@ -140,6 +142,15 @@ export default function HomePage() {
           status: t.status
         }));
         setTasks(mapped);
+        // Derive energy theme from today's templates
+        try {
+          const templates = (schedule.sessions as any[]).map((s:any)=> ({
+            energy: (s.template?.energy_type as 'High'|'Medium'|'Low') || 'Low',
+            start: (s.template?.start_time as string) || '00:00',
+            end: (s.template?.end_time as string) || '00:00'
+          }));
+          setEnergyTheme(getEnergyThemeForNow(templates));
+        } catch { setEnergyTheme(null); }
         setCurrentTaskIndex(0);
       } catch (e) {
         console.error('Failed to load tasks', e);
@@ -242,12 +253,28 @@ export default function HomePage() {
     setIsPaused(p => !p);
   };
 
+  // Single vs double click on Play/Continue: single resumes, double completes current task
+  const handlePlayClick = () => {
+    if (playClickTimer.current !== null) {
+      window.clearTimeout(playClickTimer.current);
+      playClickTimer.current = null;
+      // Treat as double click → complete task
+      handleComplete();
+      return;
+    }
+    playClickTimer.current = window.setTimeout(() => {
+      if (isTimerFrozen) setIsTimerFrozen(false);
+      setIsPaused(false);
+      playClickTimer.current = null;
+    }, 220);
+  };
+
   const textColors = getBlockTextColors(currentBlock);
 
   return (
     <AuthGuard>
     <ScheduleGuard>
-    <div className={`min-h-screen gradient-transition animated-gradient ${getBlockTheme(currentBlock)} relative overflow-hidden`}>
+    <div className={`min-h-screen gradient-transition ${energyTheme || getBlockTheme(currentBlock)} relative overflow-hidden`}>
       <div className="grain-overlay"></div>
       
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 pt-24">
@@ -315,7 +342,7 @@ export default function HomePage() {
             <button onClick={handleSkip} className="h-12 w-12 rounded-full bg-white/70 backdrop-blur-sm border border-white/30 flex items-center justify-center text-slate-900 hover:bg-white" aria-label="Skip">
               <SkipForward className="h-5 w-5" />
             </button>
-            <button onClick={()=>{ if (isTimerFrozen){ setIsTimerFrozen(false); } setIsPaused(false); }} className="h-12 w-12 rounded-full bg-white/70 backdrop-blur-sm border border-white/30 flex items-center justify-center text-slate-900 hover:bg-white" aria-label="Continue">
+            <button onClick={handlePlayClick} className="h-12 w-12 rounded-full bg-white/70 backdrop-blur-sm border border-white/30 flex items-center justify-center text-slate-900 hover:bg-white" aria-label="Continue or Complete (double click)">
               <Play className="h-5 w-5" />
             </button>
           </div>
@@ -366,19 +393,19 @@ export default function HomePage() {
         </div>
       </div>
 
-      {/* Floating menu button to open insights */}
+      {/* Floating menu button to open insights (Home only) */}
       {!insightsOpen && (
         <button
           onClick={() => setInsightsOpen(true)}
-          className="fixed top-4 right-4 z-40 text-white hover:opacity-80 transition-opacity p-2"
+          className="fixed top-4 right-4 z-40 text-black hover:opacity-80 transition-opacity p-2"
           aria-label="Open menu"
         >
           <span className="sr-only">Open insights</span>
           {/* Three-dot icon (no circle background) */}
           <div className="flex items-center justify-center space-x-1.5">
-            <span className="block h-1.5 w-1.5 bg-white rounded-full"></span>
-            <span className="block h-1.5 w-1.5 bg-white rounded-full"></span>
-            <span className="block h-1.5 w-1.5 bg-white rounded-full"></span>
+            <span className="block h-1.5 w-1.5 bg-black rounded-full"></span>
+            <span className="block h-1.5 w-1.5 bg-black rounded-full"></span>
+            <span className="block h-1.5 w-1.5 bg-black rounded-full"></span>
           </div>
         </button>
       )}

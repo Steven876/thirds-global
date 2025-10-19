@@ -117,7 +117,7 @@ export function getEnergyThemeForNow(templates: Array<{ energy: 'High'|'Medium'|
 export function getBlockTextColors(block: Block): { primary: string; secondary: string } {
   switch (block) {
     case 'night':
-      return { primary: 'text-slate-100', secondary: 'text-slate-300' };
+      return { primary: 'text-white', secondary: 'text-slate-200' };
     case 'afternoon':
       return { primary: 'text-slate-900', secondary: 'text-slate-700' };
     case 'morning':

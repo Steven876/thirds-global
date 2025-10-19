@@ -16,7 +16,7 @@ import { motion } from 'framer-motion';
 import AuthGuard from '@/components/AuthGuard';
 import ScheduleGuard from '@/components/ScheduleGuard';
 import ErrorMessage from '@/components/ErrorMessage';
-import { getCurrentBlock, getBlockTheme } from '@/lib/time';
+import { getCurrentBlock, getBlockTheme, getEnergyThemeForNow } from '@/lib/time';
 import { supabase } from '@/lib/supabaseClient';
 
 type EnergyKey = 'High' | 'Medium' | 'Low';
@@ -176,7 +176,7 @@ export default function ReportsPage() {
         }
       };
       load();
-    }, []);
+  }, []);
 
     const apply = async (target: { start: string; end: string }) => {
       try {
@@ -265,7 +265,7 @@ export default function ReportsPage() {
   return (
     <AuthGuard>
     <ScheduleGuard>
-    <div className={`min-h-screen gradient-transition animated-gradient ${getBlockTheme(currentBlock)} relative overflow-hidden`}>
+    <div className={`min-h-screen gradient-transition ${getBlockTheme(currentBlock)} relative overflow-hidden`}>
       <div className="grain-overlay"></div>
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 pt-24">
         {error && (
@@ -284,8 +284,8 @@ export default function ReportsPage() {
             <button onClick={() => setRange('this_week')} className={`px-3 py-1.5 rounded-full text-sm font-medium ${range==='this_week' ? 'bg-blue-600 text-white' : 'text-slate-800 hover:bg-white/80'}`}>This Week</button>
             <button onClick={() => setRange('last_week')} className={`px-3 py-1.5 rounded-full text-sm font-medium ${range==='last_week' ? 'bg-blue-600 text-white' : 'text-slate-800 hover:bg-white/80'}`}>Last Week</button>
           </div>
-        </div>
-
+          </div>
+          
         <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.6, delay: 0.1 }} className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
           <div className="rounded-2xl p-4 bg-white/70 backdrop-blur-sm border border-white/30">
             <div className="text-xs text-slate-600">Total Sessions</div>
@@ -298,7 +298,7 @@ export default function ReportsPage() {
           <div className="rounded-2xl p-4 bg-white/70 backdrop-blur-sm border border-white/30">
             <div className="text-xs text-slate-600">Tasks Completed</div>
             <div className="text-2xl font-semibold text-slate-900">{stats.totalTasks > 0 ? `${stats.completedTasks}/${stats.totalTasks}` : 'null'}</div>
-          </div>
+            </div>
           <div className="rounded-2xl p-4 bg-white/70 backdrop-blur-sm border border-white/30">
             <div className="text-xs text-slate-600">Completion Rate</div>
             <div className="text-2xl font-semibold text-slate-900">{stats.totalTasks > 0 ? `${completionRate}%` : 'null'}</div>
