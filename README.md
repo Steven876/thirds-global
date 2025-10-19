@@ -1,5 +1,7 @@
 # Thirds - Structure your day around your energy
 
+https://thirds-official.vercel.app/
+
 Many people chase productivity through rigid timers and endless to-do lists, but these tools ignore a key factor — Energy. As the day progresses our energy naturally fluctuates. Our web app, "Thirds," helps users structure their day around their personal energy rhythm instead of the clock. By organizing their day into three customizable time blocks — High, Medium and Low Energy — users can align their most demanding tasks with their natural peaks and give themselves grace during low-energy hours.
 	
 Our Minimum Viable Product (MVP) delivers an adaptive daily dashboard that visualizes these "thirds," tracks focus in real-time, and uses AI to recommend smarter break times and schedule adjustments based on user performance. Technically, the app is built using Next.js, React, Supabase, and Tailwind CSS, to ensure both responsiveness and a clean, accessible user experience. 
