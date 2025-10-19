@@ -13,7 +13,8 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Settings, User, Home, Calendar, BarChart3 } from 'lucide-react';
+import { Settings, User, Home, Calendar, BarChart3, Menu } from 'lucide-react';
+import { useState } from 'react';
 
 const navigation = [
   { name: 'Home', href: '/home', icon: Home },
@@ -21,8 +22,9 @@ const navigation = [
   { name: 'Reports', href: '/reports', icon: BarChart3 },
 ];
 
-export default function Navbar() {
+export default function Navbar({ onToggleInsights }: { onToggleInsights?: () => void }) {
   const pathname = usePathname();
+  const [open, setOpen] = useState(false);
 
   return (
     <nav className="bg-white/80 backdrop-blur-sm border-b border-gray-200 sticky top-0 z-50">
@@ -61,8 +63,19 @@ export default function Navbar() {
             })}
           </div>
 
-          {/* User Profile Section */}
+          {/* Right Section: Burger + Settings + User */}
           <div className="flex items-center space-x-4">
+            {/* Burger to toggle AI side panel */}
+            <button
+              onClick={() => {
+                setOpen(!open);
+                onToggleInsights?.();
+              }}
+              className="p-2 text-gray-600 hover:text-gray-900 transition-colors md:hidden"
+              aria-label="Toggle insights drawer"
+            >
+              <Menu className="h-6 w-6" />
+            </button>
             {/* TODO: Replace with actual user data from Supabase Auth */}
             
             

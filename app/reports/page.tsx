@@ -14,6 +14,8 @@
 import { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import Navbar from '@/components/Navbar';
+import AuthGuard from '@/components/AuthGuard';
+import ScheduleGuard from '@/components/ScheduleGuard';
 import Footer from '@/components/Footer';
 import ReportCharts from '@/components/ReportCharts';
 // import EmptyState from '@/components/EmptyState';
@@ -72,6 +74,8 @@ export default function ReportsPage() {
 
   if (loading) {
     return (
+      <AuthGuard>
+      <ScheduleGuard>
       <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100">
         <Navbar />
         <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
@@ -87,10 +91,14 @@ export default function ReportsPage() {
         </main>
         <Footer />
       </div>
+      </ScheduleGuard>
+      </AuthGuard>
     );
   }
 
   return (
+    <AuthGuard>
+    <ScheduleGuard>
     <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100">
       <Navbar />
       
@@ -227,5 +235,7 @@ export default function ReportsPage() {
 
       <Footer />
     </div>
+    </ScheduleGuard>
+    </AuthGuard>
   );
 }

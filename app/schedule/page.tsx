@@ -11,10 +11,12 @@
 
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import Navbar from '@/components/Navbar';
-import Footer from '@/components/Footer';
+import AIWidget from '@/components/AIWidget';
+import AuthGuard from '@/components/AuthGuard';
+import { getCurrentBlock, getBlockTheme } from '@/lib/time';
+import { supabase } from '@/lib/supabaseClient';
 import ErrorMessage from '@/components/ErrorMessage';
 import { 
   Plus, 
@@ -35,7 +37,8 @@ interface Task {
   name: string;
   duration: number; // in minutes
   description: string;
-  status: 'not-started' | 'in-progress' | 'done';
+  repeat?: 'weekday' | 'weekend' | null;
+  locked?: boolean;
 }
 
 interface EnergyBlock {
@@ -51,6 +54,8 @@ interface DaySchedule {
     medium: Task[];
     low: Task[];
   };
+  wakeTime: string;
+  sleepTime: string;
 }
 
 interface ScheduleData {
@@ -65,21 +70,33 @@ const daysOfWeek = [
   'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'
 ];
 
-const statusOptions = [
-  { value: 'not-started', label: 'Not Started', color: 'bg-gray-100 text-gray-700' },
-  { value: 'in-progress', label: 'In Progress', color: 'bg-blue-100 text-blue-700' },
-  { value: 'done', label: 'Done', color: 'bg-green-100 text-green-700' }
-];
+// Status options removed; tasks only collect name/description/duration and optional repeat
 
 export default function SchedulePage() {
+  const [currentBlock, setCurrentBlock] = useState<'morning' | 'afternoon' | 'night'>('morning');
+  const [energyLevel, setEnergyLevel] = useState<'high' | 'medium' | 'low'>('high');
+  const [insightsOpen, setInsightsOpen] = useState(false);
   const [currentStep, setCurrentStep] = useState<'times' | 'tasks' | 'repeat' | 'overview'>('times');
   const [currentTaskBlock, setCurrentTaskBlock] = useState<'high' | 'medium' | 'low'>('high');
   const [currentDay, setCurrentDay] = useState<string>('Monday');
-  const [showModal, setShowModal] = useState(true);
+  const [showModal, setShowModal] = useState(false);
   const [showCancelConfirm, setShowCancelConfirm] = useState(false);
   const [, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+
+  // Sync block/energy like Home page
+  useState(() => {
+    const update = () => {
+      const block = getCurrentBlock();
+      setCurrentBlock(block);
+      const map: Record<string, 'high' | 'medium' | 'low'> = { morning: 'high', afternoon: 'medium', night: 'low' };
+      setEnergyLevel(map[block]);
+    };
+    update();
+    const id = setInterval(update, 60000);
+    return () => clearInterval(id as unknown as number);
+  });
 
   // Initialize schedule data for all days
   const initializeScheduleData = (): ScheduleData => {
@@ -95,7 +112,9 @@ export default function SchedulePage() {
           high: [],
           medium: [],
           low: []
-        }
+        },
+        wakeTime: '06:00',
+        sleepTime: '22:30'
       };
     });
     return {
@@ -109,6 +128,15 @@ export default function SchedulePage() {
 
   const [scheduleData, setScheduleData] = useState<ScheduleData>(initializeScheduleData());
   const [savedSchedule, setSavedSchedule] = useState<ScheduleData | null>(null);
+  const [dayBlocks, setDayBlocks] = useState<{
+    energy: 'High' | 'Medium' | 'Low';
+    sessionId: number;
+    start_time: string;
+    end_time: string;
+    tasks: { id: number; name: string; description: string | null; duration_minutes: number | null; status: 'active' | 'completed' | 'skipped' }[];
+  }[] | null>(null);
+  const [editingTaskId, setEditingTaskId] = useState<number | null>(null);
+  const [username, setUsername] = useState<string | null>(null);
   const [originalScheduleData, setOriginalScheduleData] = useState<ScheduleData | null>(null);
 
   // Calculate block duration in minutes
@@ -154,6 +182,16 @@ export default function SchedulePage() {
     return true;
   };
 
+  // Validate at least one task exists for each energy block
+  const hasAtLeastOnePerBlock = (): boolean => {
+    const dayData = scheduleData.days[currentDay];
+    return (
+      dayData.tasks.high.length > 0 &&
+      dayData.tasks.medium.length > 0 &&
+      dayData.tasks.low.length > 0
+    );
+  };
+
   // Add new task
   const addTask = () => {
     const newTask: Task = {
@@ -161,7 +199,8 @@ export default function SchedulePage() {
       name: '',
       duration: 30,
       description: '',
-      status: 'not-started'
+      repeat: null,
+      locked: false
     };
 
     setScheduleData(prev => ({
@@ -180,7 +219,7 @@ export default function SchedulePage() {
   };
 
   // Update task
-  const updateTask = (taskId: string, field: keyof Task, value: string | number) => {
+  const updateTask = (taskId: string, field: keyof Task, value: string | number | boolean | null) => {
     setScheduleData(prev => ({
       ...prev,
       days: {
@@ -217,20 +256,16 @@ export default function SchedulePage() {
 
   // Apply times to selected days based on repeat settings
   const applyTimesToSelectedDays = (times: EnergyBlock) => {
-    const selectedDays = getSelectedDays();
-    
+    // Copy to every day of the week unconditionally
     setScheduleData(prev => {
       const newDays = { ...prev.days };
-      selectedDays.forEach(day => {
+      daysOfWeek.forEach(day => {
         newDays[day] = {
           ...newDays[day],
           times: { ...times }
         };
       });
-      return {
-        ...prev,
-        days: newDays
-      };
+      return { ...prev, days: newDays };
     });
   };
 
@@ -269,27 +304,88 @@ export default function SchedulePage() {
     setTimeout(() => setSuccess(null), 3000);
   };
 
-  // Save entire schedule
+  // Save entire schedule with repeat expansion
   const handleSaveSchedule = async () => {
     setLoading(true);
     setError(null);
 
     try {
-      // TODO: Replace with actual API call
-      // const response = await fetch('/api/schedule', {
-      //   method: 'POST',
-      //   headers: { 'Content-Type': 'application/json' },
-      //   body: JSON.stringify(scheduleData)
-      // });
+      // Get auth token for API routes (RLS)
+      const { data: sessionData } = await supabase.auth.getSession();
+      const token = sessionData.session?.access_token;
+      const userId = sessionData.session?.user?.id;
+      if (!token || !userId) {
+        throw new Error('You must be signed in to save a schedule.');
+      }
 
-      // Mock success
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      
+      const authHeaders = {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json'
+      } as const;
+
+      // Expand tasks according to repeat selection
+      const selectedDays = getSelectedDays();
+
+      // Map frontend status to backend TaskStatus
+      const mapStatus = (): 'active' | 'completed' | 'skipped' => 'active';
+
+      for (const day of selectedDays) {
+        const dayData = scheduleData.days[day];
+        const sessionsPayload = [
+          { energy_type: 'High', start_time: dayData.times.high.startTime, end_time: dayData.times.high.endTime },
+          { energy_type: 'Medium', start_time: dayData.times.medium.startTime, end_time: dayData.times.medium.endTime },
+          { energy_type: 'Low', start_time: dayData.times.low.startTime, end_time: dayData.times.low.endTime }
+        ];
+
+        const scheduleRes = await fetch('/api/schedule', {
+          method: 'POST',
+          headers: authHeaders,
+          body: JSON.stringify({
+            user_id: userId,
+            day_of_week: day,
+            sleep_time: dayData.sleepTime,
+            wake_time: dayData.wakeTime,
+            sessions: sessionsPayload
+          })
+        });
+        const scheduleJson = await scheduleRes.json();
+        if (!scheduleRes.ok || !scheduleJson?.ok) {
+          throw new Error(scheduleJson?.error || 'Failed to create schedule.');
+        }
+
+        const sessionIds: number[] = scheduleJson.data.session_ids;
+        const blockToSessionId: Record<'high' | 'medium' | 'low', number> = {
+          high: sessionIds[0],
+          medium: sessionIds[1],
+          low: sessionIds[2]
+        };
+
+        // Create tasks under the corresponding sessions (from the 'currentDay' blueprint)
+        const source = scheduleData.days[currentDay];
+        for (const block of ['high', 'medium', 'low'] as const) {
+          for (const task of source.tasks[block]) {
+            if (!task.name) continue;
+            await fetch('/api/sessions', {
+              method: 'POST',
+              headers: authHeaders,
+              body: JSON.stringify({
+                session_id: blockToSessionId[block],
+                name: task.name,
+                description: task.description || null,
+                duration_minutes: task.duration,
+                status: mapStatus()
+              })
+            });
+          }
+        }
+      }
+
       setSavedSchedule(scheduleData);
       setCurrentStep('overview');
       setShowModal(false);
       setSuccess('Schedule saved successfully!');
       setTimeout(() => setSuccess(null), 3000);
+      await loadTodayBlocks();
     } catch {
       setError('Failed to save schedule. Please try again.');
     } finally {
@@ -333,81 +429,64 @@ export default function SchedulePage() {
           <div className="space-y-6">
             <div className="text-center">
               <h2 className="text-2xl font-bold text-gray-900 mb-2">Set Your Energy Block Times</h2>
-              <p className="text-gray-600">Define when each energy level occurs in your day</p>
-            </div>
-
-            {/* Day Selection */}
-            <div className="bg-blue-50 rounded-lg p-4">
-              <label className="block text-sm font-medium text-gray-700 mb-3">
-                Select Day to Configure
-              </label>
-              <select
-                value={currentDay}
-                onChange={(e) => setCurrentDay(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-              >
-                {daysOfWeek.map(day => (
-                  <option key={day} value={day}>{day}</option>
-                ))}
-              </select>
+              <p className="text-gray-600">These times will be applied to every day of the week</p>
             </div>
 
             <div className="space-y-6">
-              {Object.entries(scheduleData.days[currentDay].times).map(([block, times]) => (
-                <div key={block} className="bg-gray-50 rounded-lg p-4">
-                  <h3 className="text-lg font-semibold text-gray-900 mb-4 capitalize">
-                    {block} Energy Block
-                  </h3>
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">
-                        Start Time
-                      </label>
-                      <input
-                        type="time"
-                        value={times.startTime}
-                        onChange={(e) => setScheduleData(prev => ({
-                          ...prev,
-                          days: {
-                            ...prev.days,
-                            [currentDay]: {
-                              ...prev.days[currentDay],
-                              times: {
-                                ...prev.days[currentDay].times,
-                                [block]: { ...times, startTime: e.target.value }
+              {(['high','medium','low'] as const).map((blockKey) => {
+                const times = scheduleData.days[currentDay].times[blockKey];
+                return (
+                  <div key={blockKey} className="rounded-xl p-4 border border-white/30 bg-white/60 backdrop-blur-sm shadow-sm">
+                    <h3 className="text-lg font-semibold text-gray-900 mb-4 capitalize">
+                      {blockKey} Energy Block
+                    </h3>
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-2">Start Time</label>
+                        <input
+                          type="time"
+                          value={times.startTime}
+                          onChange={(e) => setScheduleData(prev => ({
+                            ...prev,
+                            days: {
+                              ...prev.days,
+                              [currentDay]: {
+                                ...prev.days[currentDay],
+                                times: {
+                                  ...prev.days[currentDay].times,
+                                  [blockKey]: { ...times, startTime: e.target.value }
+                                }
                               }
                             }
-                          }
-                        }))}
-                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">
-                        End Time
-                      </label>
-                      <input
-                        type="time"
-                        value={times.endTime}
-                        onChange={(e) => setScheduleData(prev => ({
-                          ...prev,
-                          days: {
-                            ...prev.days,
-                            [currentDay]: {
-                              ...prev.days[currentDay],
-                              times: {
-                                ...prev.days[currentDay].times,
-                                [block]: { ...times, endTime: e.target.value }
+                          }))}
+                          className="w-full px-3 py-2 bg-white/90 text-slate-900 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-2">End Time</label>
+                        <input
+                          type="time"
+                          value={times.endTime}
+                          onChange={(e) => setScheduleData(prev => ({
+                            ...prev,
+                            days: {
+                              ...prev.days,
+                              [currentDay]: {
+                                ...prev.days[currentDay],
+                                times: {
+                                  ...prev.days[currentDay].times,
+                                  [blockKey]: { ...times, endTime: e.target.value }
+                                }
                               }
                             }
-                          }
-                        }))}
-                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                      />
+                          }))}
+                          className="w-full px-3 py-2 bg-white/90 text-slate-900 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                        />
+                      </div>
                     </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
 
             <div className="flex justify-between">
@@ -422,7 +501,7 @@ export default function SchedulePage() {
                 className="inline-flex items-center space-x-2 px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
               >
                 <Save className="h-4 w-4" />
-                <span>Save & Continue</span>
+                <span>Next</span>
               </button>
             </div>
           </div>
@@ -436,37 +515,27 @@ export default function SchedulePage() {
               <p className="text-gray-600">Add tasks for each energy block</p>
             </div>
 
-            {/* Day Selection */}
-            <div className="bg-blue-50 rounded-lg p-4">
-              <label className="block text-sm font-medium text-gray-700 mb-3">
-                Select Day to Configure Tasks
-              </label>
-              <select
-                value={currentDay}
-                onChange={(e) => setCurrentDay(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-              >
-                {daysOfWeek.map(day => (
-                  <option key={day} value={day}>{day}</option>
-                ))}
-              </select>
-            </div>
+            {/* Removed day selection per requirements */}
 
-            {/* Block Navigation */}
-            <div className="flex justify-center space-x-4">
-              {(['high', 'medium', 'low'] as const).map((block) => (
-                <button
-                  key={block}
-                  onClick={() => setCurrentTaskBlock(block)}
-                  className={`px-4 py-2 rounded-lg font-medium transition-colors ${
-                    currentTaskBlock === block
-                      ? 'bg-blue-100 text-blue-700'
-                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                  }`}
-                >
-                  {block.charAt(0).toUpperCase() + block.slice(1)} Energy
-                </button>
-              ))}
+            {/* Block Navigation with arrows */}
+            <div className="flex items-center justify-center space-x-4">
+              <button
+                onClick={() => setCurrentTaskBlock(prev => prev === 'high' ? 'low' : prev === 'medium' ? 'high' : 'medium')}
+                className="px-3 py-2 rounded-lg text-slate-900 hover:text-slate-700"
+                aria-label="Previous block"
+              >
+                ←
+              </button>
+              <div className="px-4 py-2 rounded-lg bg-white/70 backdrop-blur-sm border border-white/40 font-medium capitalize text-slate-900">
+                {currentTaskBlock} Energy
+              </div>
+              <button
+                onClick={() => setCurrentTaskBlock(prev => prev === 'high' ? 'medium' : prev === 'medium' ? 'low' : 'high')}
+                className="px-3 py-2 rounded-lg text-slate-900 hover:text-slate-700"
+                aria-label="Next block"
+              >
+                →
+              </button>
             </div>
 
             {/* Current Block Tasks */}
@@ -486,18 +555,18 @@ export default function SchedulePage() {
 
               <div className="space-y-4">
                 {scheduleData.days[currentDay].tasks[currentTaskBlock].map((task) => (
-                  <div key={task.id} className="bg-white rounded-lg p-4 border border-gray-200">
+                  <div key={task.id} className="rounded-lg p-4 border border-white/30 bg-white/70 backdrop-blur-sm">
                     <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-                      <div>
+                      <div className="md:col-span-2">
                         <label className="block text-sm font-medium text-gray-700 mb-1">
                           Task Name
                         </label>
                         <input
                           type="text"
                           value={task.name}
-                          onChange={(e) => updateTask(task.id, 'name', e.target.value)}
+                          onChange={(e) => !task.locked && updateTask(task.id, 'name', e.target.value)}
                           placeholder="Enter task name"
-                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                          className={`w-full px-3 py-2 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent ${task.locked ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : 'bg-white/90 border border-gray-300 text-slate-900'}`}
                         />
                       </div>
                       <div>
@@ -507,28 +576,18 @@ export default function SchedulePage() {
                         <input
                           type="number"
                           value={task.duration}
-                          onChange={(e) => updateTask(task.id, 'duration', parseInt(e.target.value) || 0)}
+                          onChange={(e) => !task.locked && updateTask(task.id, 'duration', parseInt(e.target.value) || 0)}
                           min="1"
-                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                          className={`w-full px-3 py-2 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent ${task.locked ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : 'bg-white/90 border border-gray-300 text-slate-900'}`}
                         />
                       </div>
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">
-                          Status
-                        </label>
-                        <select
-                          value={task.status}
-                          onChange={(e) => updateTask(task.id, 'status', e.target.value)}
-                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                      <div className="flex items-end gap-2">
+                        <button
+                          onClick={() => updateTask(task.id, 'locked', !task.locked)}
+                          className={`px-3 py-2 rounded-lg ${task.locked ? 'bg-amber-600 text-white hover:bg-amber-700' : 'bg-emerald-600 text-white hover:bg-emerald-700'}`}
                         >
-                          {statusOptions.map((option) => (
-                            <option key={option.value} value={option.value}>
-                              {option.label}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                      <div className="flex items-end">
+                          {task.locked ? 'Edit' : 'Save'}
+                        </button>
                         <button
                           onClick={() => removeTask(task.id)}
                           className="px-3 py-2 text-red-600 hover:text-red-700 transition-colors"
@@ -543,48 +602,39 @@ export default function SchedulePage() {
                       </label>
                       <textarea
                         value={task.description}
-                        onChange={(e) => updateTask(task.id, 'description', e.target.value)}
+                        onChange={(e) => !task.locked && updateTask(task.id, 'description', e.target.value)}
                         placeholder="Enter task description"
                         rows={2}
-                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                        className={`w-full px-3 py-2 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent ${task.locked ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : 'bg-white/90 border border-gray-300 text-slate-900'}`}
                       />
                     </div>
                   </div>
                 ))}
               </div>
 
-              <div className="flex justify-between items-center mt-6">
-                <div className="text-sm text-gray-600">
-                  Total duration: {scheduleData.days[currentDay].tasks[currentTaskBlock].reduce((sum, task) => sum + task.duration, 0)} minutes
-                </div>
-                <button
-                  onClick={handleSaveTasks}
-                  className="inline-flex items-center space-x-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-                >
-                  <Save className="h-4 w-4" />
-                  <span>Save Tasks</span>
-                </button>
+              <div className="flex justify-start items-center mt-6 text-sm text-gray-700">
+                Total duration: {scheduleData.days[currentDay].tasks[currentTaskBlock].reduce((sum, task) => sum + task.duration, 0)} minutes
               </div>
             </div>
 
             <div className="flex justify-between">
               <button
                 onClick={handleCancel}
-                className="inline-flex items-center space-x-2 px-4 py-2 text-gray-600 hover:text-gray-700 transition-colors"
+                className="inline-flex items-center space-x-2 px-4 py-2 text-slate-900 hover:text-slate-700 transition-colors"
               >
                 <span>Cancel</span>
               </button>
               <div className="flex space-x-4">
                 <button
                   onClick={() => setCurrentStep('times')}
-                  className="inline-flex items-center space-x-2 px-4 py-2 text-gray-600 hover:text-gray-700 transition-colors"
+                  className="inline-flex items-center space-x-2 px-4 py-2 text-slate-900 hover:text-slate-700 transition-colors"
                 >
                   <ArrowLeft className="h-4 w-4" />
                   <span>Back</span>
                 </button>
                 <button
-                  onClick={() => setCurrentStep('repeat')}
-                  className="inline-flex items-center space-x-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+                  onClick={() => hasAtLeastOnePerBlock() ? setCurrentStep('repeat') : setError('Add at least one task to each energy block before continuing.')}
+                  className={`inline-flex items-center space-x-2 px-4 py-2 rounded-lg transition-colors ${hasAtLeastOnePerBlock() ? 'bg-blue-600 text-white hover:bg-blue-700' : 'bg-gray-300 text-gray-600 cursor-not-allowed'}`}
                 >
                   <span>Continue</span>
                   <ArrowRight className="h-4 w-4" />
@@ -710,75 +760,140 @@ export default function SchedulePage() {
     }
   };
 
-  // Weekly overview component
-  const WeeklyOverview = () => {
-    if (!savedSchedule) return null;
+  // Load today's blocks (sessions + tasks) from DB
+  const loadTodayBlocks = async () => {
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const uid = sessionData.session?.user?.id;
+      if (!uid) return;
+      const { data: profile } = await supabase.from('users').select('username').eq('id', uid).single();
+      setUsername(profile?.username ?? null);
+      const weekday = new Date().toLocaleString('en-US', { weekday: 'long' });
+      const { data: scheduleRow, error: sErr } = await supabase
+        .from('schedules')
+        .select('id')
+        .eq('user_id', uid)
+        .eq('day_of_week', weekday)
+        .single();
+      if (sErr || !scheduleRow) { setDayBlocks(null); return; }
+      const scheduleId = scheduleRow.id;
+      const { data: sessions, error: sessErr } = await supabase
+        .from('sessions')
+        .select('id, template_id')
+        .eq('schedule_id', scheduleId);
+      if (sessErr || !sessions) { setDayBlocks(null); return; }
+      const templateIds = sessions.map(s => s.template_id);
+      const { data: templates } = await supabase
+        .from('session_templates')
+        .select('id, energy_type, start_time, end_time')
+        .in('id', templateIds);
+      const tmplById = Object.fromEntries((templates || []).map(t => [t.id, t]));
+      const sessionIds = sessions.map(s => s.id);
+      const { data: tasks } = await supabase
+        .from('tasks')
+        .select('id, session_id, name, description, duration_minutes, status')
+        .in('session_id', sessionIds);
+      const tasksBySession: Record<number, any[]> = {};
+      (tasks || []).forEach(t => {
+        tasksBySession[t.session_id] = tasksBySession[t.session_id] || [];
+        tasksBySession[t.session_id].push(t);
+      });
+      const blocks = sessions.map(s => {
+        const tmpl = tmplById[s.template_id];
+        return {
+          energy: tmpl?.energy_type || 'High',
+          sessionId: s.id,
+          start_time: tmpl?.start_time || '00:00',
+          end_time: tmpl?.end_time || '00:00',
+          tasks: tasksBySession[s.id] || []
+        };
+      }).sort((a,b) => (a.energy === 'High' ? 0 : a.energy === 'Medium' ? 1 : 2) - (b.energy === 'High' ? 0 : b.energy === 'Medium' ? 1 : 2));
+      setDayBlocks(blocks);
+    } catch (e) {
+      console.error('Failed to load day blocks', e);
+      setDayBlocks(null);
+    }
+  };
 
+  useEffect(() => { loadTodayBlocks(); }, []);
+
+  const updateTaskField = async (taskId: number, payload: Partial<{ name: string; description: string | null; duration_minutes: number | null; status: 'active'|'completed'|'skipped' }>) => {
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const token = sessionData.session?.access_token;
+      if (!token) return;
+      await fetch('/api/tasks', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ id: taskId, ...payload })
+      });
+      await loadTodayBlocks();
+      setEditingTaskId(null);
+    } catch (e) { console.error(e); }
+  };
+
+  const BlocksView = () => {
+    if (!dayBlocks) return null;
     return (
-      <div className="space-y-6">
-        <div className="text-center">
-          <h2 className="text-2xl font-bold text-gray-900 mb-2">Your Weekly Schedule</h2>
-          <p className="text-gray-600">Overview of your energy-based schedule</p>
-        </div>
-
-        <div className="grid grid-cols-7 gap-4">
-          {daysOfWeek.map((day) => (
-            <div key={day} className="bg-white rounded-lg border border-gray-200 p-4">
-              <h3 className="text-sm font-semibold text-gray-900 mb-3 text-center">{day}</h3>
-              
-              {(['high', 'medium', 'low'] as const).map((block) => (
-                <div key={block} className="mb-4 last:mb-0">
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-xs font-medium text-gray-600 capitalize">
-                      {block} Energy
-                    </span>
-                    <button
-                      onClick={() => {
-                        setCurrentDay(day);
-                        handleEditSchedule();
-                      }}
-                      className="text-xs text-blue-600 hover:text-blue-700"
-                    >
-                      <Edit className="h-3 w-3" />
-                    </button>
-                  </div>
-                  
-                  <div className="text-xs text-gray-500 mb-2">
-                    {savedSchedule.days[day].times[block].startTime} - {savedSchedule.days[day].times[block].endTime}
-                  </div>
-                  
-                  <div className="space-y-1">
-                    {savedSchedule.days[day].tasks[block].map((task) => (
-                      <div key={task.id} className="bg-gray-50 rounded p-2 text-xs">
-                        <div className="font-medium text-gray-900">{task.name}</div>
-                        <div className="text-gray-500">{task.duration}min</div>
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        {dayBlocks.map(block => (
+          <div
+            key={block.sessionId}
+            className={`rounded-2xl p-4 backdrop-blur-sm border ${
+              block.energy === 'High' ? 'bg-emerald-50/70 border-emerald-200' :
+              block.energy === 'Medium' ? 'bg-amber-50/70 border-amber-200' :
+              'bg-rose-50/70 border-rose-200'
+            }`}
+          >
+            <div className="flex items-center justify-between mb-3">
+              <div className="font-semibold text-slate-900">{block.energy} Energy</div>
+            </div>
+            <div className="space-y-3">
+              {block.tasks.length === 0 && (
+                <div className="text-sm text-slate-600">No tasks for this block.</div>
+              )}
+              {block.tasks.map(t => (
+                <div key={t.id} className="rounded-lg border border-white/30 bg-white/80 p-3">
+                  {editingTaskId === t.id ? (
+                    <div className="space-y-2">
+                      <input defaultValue={t.name} onBlur={(e)=>updateTaskField(t.id,{ name: e.target.value })} className="w-full px-3 py-2 rounded bg-white/90 border border-gray-300 text-slate-900" />
+                      <textarea defaultValue={t.description || ''} onBlur={(e)=>updateTaskField(t.id,{ description: e.target.value || null })} rows={2} className="w-full px-3 py-2 rounded bg-white/90 border border-gray-300 text-slate-900" />
+                      <input type="number" defaultValue={t.duration_minutes || 0} onBlur={(e)=>updateTaskField(t.id,{ duration_minutes: parseInt(e.target.value)||0 })} className="w-full px-3 py-2 rounded bg-white/90 border border-gray-300 text-slate-900" />
+                      <div className="text-right">
+                        <button onClick={()=>setEditingTaskId(null)} className="px-3 py-1 text-sm text-slate-700">Done</button>
                       </div>
-                    ))}
-                  </div>
+                    </div>
+                  ) : (
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <div className="font-medium text-slate-900">{t.name}</div>
+                        {t.description && <div className="text-sm text-slate-600">{t.description}</div>}
+                        {typeof t.duration_minutes === 'number' && <div className="text-xs text-slate-500 mt-1">{t.duration_minutes} min</div>}
+                      </div>
+                      <button className="text-sm text-blue-700 hover:underline" onClick={()=>setEditingTaskId(t.id)}>Edit</button>
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
-          ))}
-        </div>
-
-        <div className="flex justify-center">
-          <button
-            onClick={handleEditSchedule}
-            className="inline-flex items-center space-x-2 px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-          >
-            <Edit className="h-4 w-4" />
-            <span>Edit Schedule</span>
-          </button>
-        </div>
+          </div>
+        ))}
       </div>
     );
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100">
-      <Navbar />
+    <AuthGuard>
+    <div className={`min-h-screen gradient-transition animated-gradient ${getBlockTheme(currentBlock)} relative overflow-hidden`}>
+      <div className="grain-overlay"></div>
       
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+      <main className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-10">
+        {/* Header */}
+        <div className="flex items-center justify-center mb-8">
+          <h1 className="text-3xl font-bold text-slate-900">
+            {dayBlocks !== null ? `${username ? username + "'s" : 'Your'} Schedule` : 'Create Your Schedule'}
+          </h1>
+        </div>
         {error && (
           <div className="mb-6">
             <ErrorMessage message={error} onDismiss={() => setError(null)} />
@@ -791,8 +906,10 @@ export default function SchedulePage() {
           </div>
         )}
 
-        {savedSchedule ? (
-          <WeeklyOverview />
+        {dayBlocks !== null ? (
+          <div className="max-w-6xl mx-auto">
+            <BlocksView />
+          </div>
         ) : (
           <div className="text-center py-12">
             <Calendar className="h-16 w-16 text-gray-400 mx-auto mb-4" />
@@ -816,15 +933,15 @@ export default function SchedulePage() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50"
+            className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50"
           >
             <motion.div
-              initial={{ scale: 0.95, opacity: 0 }}
+              initial={{ scale: 0.98, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.95, opacity: 0 }}
-              className="bg-white rounded-2xl shadow-xl max-w-4xl w-full max-h-[90vh] overflow-y-auto"
+              exit={{ scale: 0.98, opacity: 0 }}
+              className="rounded-2xl shadow-xl max-w-3xl w-full max-h-[90vh] overflow-y-auto bg-white/40 backdrop-blur-md border border-white/30"
             >
-              <div className="p-8">
+              <div className="p-6">
                 {renderModalContent()}
               </div>
             </motion.div>
@@ -874,7 +991,33 @@ export default function SchedulePage() {
         )}
       </AnimatePresence>
 
-      <Footer />
+      {/* Insights Slide-over (consistent with Home) */}
+      <div className={`fixed top-0 right-0 h-full w-80 bg-white/40 backdrop-blur-md shadow-2xl border-l border-white/30 transform transition-transform duration-300 ease-in-out z-40 ${insightsOpen ? 'translate-x-0' : 'translate-x-full'}`}>
+        <div className="h-16 flex items-center px-4 border-b border-gray-200">
+          <span className="font-semibold text-gray-900">AI Insights</span>
+          <button className="ml-auto text-gray-500 hover:text-gray-700" onClick={() => setInsightsOpen(false)}>Close</button>
+        </div>
+        <div className="p-4 overflow-y-auto">
+          <AIWidget />
+        </div>
+      </div>
+
+      {/* Three-dot menu top-right */}
+      {!insightsOpen && (
+        <button
+          onClick={() => setInsightsOpen(true)}
+          className="fixed top-4 right-4 z-40 text-white hover:opacity-80 transition-opacity p-2"
+          aria-label="Open menu"
+        >
+          <span className="sr-only">Open insights</span>
+          <div className="flex items-center justify-center space-x-1.5">
+            <span className="block h-1.5 w-1.5 bg-white rounded-full"></span>
+            <span className="block h-1.5 w-1.5 bg-white rounded-full"></span>
+            <span className="block h-1.5 w-1.5 bg-white rounded-full"></span>
+          </div>
+        </button>
+      )}
     </div>
+    </AuthGuard>
   );
 }
