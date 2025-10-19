@@ -182,7 +182,7 @@ If you encounter any issues or have questions:
 - Animations by [Framer Motion](https://www.framer.com/motion/)
 - Icons by [Lucide React](https://lucide.dev/)
 
-## 🙏 Developers' Notes
+## 🧠 Developers' Notes
 
 With further development we'd like to:
 - change the name of the app to Pulse, Rhythm, or another name that aligns with the core functionality.
@@ -194,4 +194,4 @@ With further development we'd like to:
 
 **Thirds** - Structure your day around your energy. ⚡
 
-Steven Armstrong (@Steven876), Kenrick Brown (@), Iyana Taylor (@iyanataylor1), Zaina Thompson (@newUserZaina)
+Steven Armstrong (@Steven876), Kenrick Brown (@kenrick14), Iyana Taylor (@iyanataylor1), Zaina Thompson (@newUserZaina)
