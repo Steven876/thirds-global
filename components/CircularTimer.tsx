@@ -39,7 +39,8 @@ export default function CircularTimer({
 
   // Calculate progress percentage (0-100)
   const progress = Math.max(0, Math.min(100, (displayTime / (25 * 60)) * 100)); // Assuming 25min max
-  const circumference = 2 * Math.PI * 90; // radius = 90
+  const radius = 120; // bigger radius for larger circle
+  const circumference = 2 * Math.PI * radius;
   const strokeDashoffset = circumference - (progress / 100) * circumference;
 
   const energyColors = {
@@ -55,31 +56,31 @@ export default function CircularTimer({
   };
 
   return (
-    <div className="flex flex-col items-center space-y-6">
+    <div className="flex flex-col items-center space-y-4">
       {/* Timer Circle */}
       <div className="relative">
         <svg
-          className="w-48 h-48 transform -rotate-90"
-          viewBox="0 0 200 200"
+          className="w-72 h-72 transform -rotate-90 drop-shadow-lg"
+          viewBox="0 0 300 300"
         >
           {/* Background circle */}
           <circle
-            cx="100"
-            cy="100"
-            r="90"
+            cx="150"
+            cy="150"
+            r={radius}
             stroke="currentColor"
-            strokeWidth="8"
+            strokeWidth="10"
             fill="none"
             className="text-gray-200"
           />
           
           {/* Progress circle */}
           <circle
-            cx="100"
-            cy="100"
-            r="90"
+            cx="150"
+            cy="150"
+            r={radius}
             stroke="currentColor"
-            strokeWidth="8"
+            strokeWidth="10"
             fill="none"
             strokeDasharray={circumference}
             strokeDashoffset={strokeDashoffset}
@@ -91,30 +92,16 @@ export default function CircularTimer({
         {/* Time display */}
         <div className="absolute inset-0 flex items-center justify-center">
           <div className="text-center">
-            <div className={`text-3xl font-bold ${energyBgColors[energyLevel]}`}>
+            <div className={`text-5xl font-bold ${energyBgColors[energyLevel]}`}>
               {secondsToMMSS(displayTime)}
             </div>
-            <div className="text-sm text-gray-500 mt-1">
+            <div className="text-sm text-gray-500 mt-2">
               remaining
             </div>
           </div>
         </div>
       </div>
-
-      {/* Current Task */}
-      <div className="text-center max-w-xs">
-        <h3 className="text-lg font-semibold text-gray-900 mb-2">
-          Current Task
-        </h3>
-        <p className="text-gray-600 break-words">
-          {currentTask || 'No task selected'}
-        </p>
-      </div>
-
-      {/* Energy Level Indicator */}
-      <div className={`px-3 py-1 rounded-full text-sm font-medium ${getEnergyColor(energyLevel)}`}>
-        {energyLevel.charAt(0).toUpperCase() + energyLevel.slice(1)} Energy
-      </div>
+      {/* Simplified: external container handles current/next task labels */}
     </div>
   );
 }

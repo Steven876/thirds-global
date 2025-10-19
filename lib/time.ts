@@ -18,7 +18,7 @@ export function getCurrentBlock(now: Date = new Date()): Block {
   
   if (hour >= 5 && hour < 12) {
     return 'morning';
-  } else if (hour >= 12 && hour < 18) {
+  } else if (hour >= 12 && hour < 19) {
     return 'afternoon';
   } else {
     return 'night';
@@ -78,12 +78,27 @@ export function secondsToMMSS(seconds: number): string {
  */
 export function getBlockTheme(block: Block): string {
   const themes = {
-    morning: 'from-yellow-100 via-orange-200 to-orange-300',
-    afternoon: 'from-orange-200 via-amber-200 to-blue-200',
-    night: 'from-indigo-900 via-indigo-700 to-slate-800'
+    morning: 'soft-morning',
+    afternoon: 'soft-afternoon',
+    night: 'soft-night'
   };
   
-  return `bg-gradient-to-br ${themes[block]}`;
+  return `${themes[block]} animated-gradient`;
+}
+
+/**
+ * Returns readable text colors for the current block
+ */
+export function getBlockTextColors(block: Block): { primary: string; secondary: string } {
+  switch (block) {
+    case 'night':
+      return { primary: 'text-slate-100', secondary: 'text-slate-300' };
+    case 'afternoon':
+      return { primary: 'text-slate-900', secondary: 'text-slate-700' };
+    case 'morning':
+    default:
+      return { primary: 'text-slate-900', secondary: 'text-slate-700' };
+  }
 }
 
 /**

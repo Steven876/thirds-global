@@ -56,10 +56,12 @@ export interface Report {
 
 // UI Component Props
 export interface TaskItem {
+  id?: number; // optional DB id if available
   label: string;
   range: string;
   energy: EnergyLevel;
   done?: boolean;
+  status?: 'active' | 'completed' | 'skipped';
 }
 
 export interface CircularTimerProps {
