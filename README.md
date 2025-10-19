@@ -191,4 +191,5 @@ With further development we'd like to:
 ---
 
 **Thirds** - Structure your day around your energy. ⚡
+
 Steven Armstrong (@Steven876), Kenrick Brown (@), Iyana Taylor (@iyanataylor1), Zaina Thompson (@newUserZaina)
