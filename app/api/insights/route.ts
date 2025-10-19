@@ -12,9 +12,9 @@ import { ApiResponse, InsightsResponse } from '@/lib/types';
 import OpenAI from 'openai';
 
 // Initialize OpenAI client
-const openai = new OpenAI({
+const openai = process.env.OPENAI_API_KEY ? new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
-});
+}) : null;
 
 interface UserDataSummary {
   totalSessions: number;
@@ -79,13 +79,20 @@ export async function GET(request: NextRequest) {
     let suggestions: string[] = [];
     let proposals: Proposal[] = [];
     let motivation: string | undefined = undefined;
-    try {
-      suggestions = await generateAISuggestions(userDataSummary);
-      const p = generateScheduleProposals(userDataSummary);
-      proposals = p;
-      motivation = await generateMotivationalMessage(userDataSummary);
-    } catch (aiError) {
-      console.warn('AI service failed, falling back to rule-based suggestions:', aiError);
+    if (openai) {
+      try {
+        suggestions = await generateAISuggestions(userDataSummary);
+        const p = generateScheduleProposals(userDataSummary);
+        proposals = p;
+        motivation = await generateMotivationalMessage(userDataSummary);
+      } catch (aiError) {
+        console.warn('AI service failed, falling back to rule-based suggestions:', aiError);
+        suggestions = generateRuleBasedSuggestions(userDataSummary);
+        proposals = generateScheduleProposals(userDataSummary);
+        motivation = generateRuleBasedMotivation(userDataSummary);
+      }
+    } else {
+      console.warn('OpenAI API key not configured, using rule-based suggestions');
       suggestions = generateRuleBasedSuggestions(userDataSummary);
       proposals = generateScheduleProposals(userDataSummary);
       motivation = generateRuleBasedMotivation(userDataSummary);
@@ -376,6 +383,9 @@ async function fetchUserDataSummary(supabase: any, userId: string): Promise<User
 
 // Generate AI-powered suggestions using OpenAI
 async function generateAISuggestions(userData: UserDataSummary): Promise<string[]> {
+  if (!openai) {
+    throw new Error('OpenAI client not initialized');
+  }
   const prompt = `You are a productivity coach analyzing a user's focus session data. Based on the following data summary, provide 3-6 short, actionable recommendations for schedule and energy optimization.
 
 User Data Summary:
@@ -493,6 +503,9 @@ function generateRuleBasedSuggestions(userData: UserDataSummary): string[] {
 
 // Motivational message generators
 async function generateMotivationalMessage(userData: UserDataSummary): Promise<string> {
+  if (!openai) {
+    throw new Error('OpenAI client not initialized');
+  }
   const prompt = `Write a single short motivational line (max 18 words) tailored to the user's current energy context.
 
 Context:

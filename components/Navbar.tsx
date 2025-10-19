@@ -15,6 +15,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { Settings, User, Home, Calendar, BarChart3, Menu } from 'lucide-react';
 import { useState } from 'react';
+import OrbitalThirdsLogo from './OrbitalThirdsLogo';
 
 const navigation = [
   { name: 'Home', href: '/home', icon: Home },
@@ -32,11 +33,8 @@ export default function Navbar({ onToggleInsights }: { onToggleInsights?: () => 
         <div className="flex justify-between items-center h-16">
           {/* Logo */}
           <div className="flex items-center">
-            <Link href="/" className="flex items-center space-x-2">
-              <div className="w-8 h-8 bg-gradient-to-br from-orange-400 to-blue-600 rounded-lg flex items-center justify-center">
-                <span className="text-white font-bold text-sm">T</span>
-              </div>
-              <span className="text-xl font-bold text-gray-900">Thirds</span>
+            <Link href="/" className="flex items-center">
+              <OrbitalThirdsLogo size={32} variant="horizontal" theme="light" />
             </Link>
           </div>
 

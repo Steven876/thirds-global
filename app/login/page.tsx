@@ -3,9 +3,9 @@
 import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabaseClient';
 import { useRouter } from 'next/navigation';
-import Image from 'next/image';
 import Link from 'next/link';
 import { getCurrentBlock, getBlockTheme } from '@/lib/time';
+import OrbitalThirdsLogo from '@/components/OrbitalThirdsLogo';
 
 export default function LoginPage() {
   const router = useRouter();
@@ -106,8 +106,8 @@ export default function LoginPage() {
       <div className="w-full max-w-md">
         {/* Brand header */}
         <div className="flex flex-col items-center mb-6">
-          <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-orange-400 to-blue-600 flex items-center justify-center shadow-md mb-3">
-            <Image src="/logo.svg" alt="Thirds logo" width={28} height={28} />
+          <div className="mb-3">
+            <OrbitalThirdsLogo size={48} variant="icon" theme="light" />
           </div>
           <div className="text-center">
             <h1 className="text-2xl font-extrabold text-slate-900 tracking-tight">Thirds</h1>
