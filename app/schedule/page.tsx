@@ -146,6 +146,15 @@ export default function SchedulePage() {
   // Quick add inputs for tasks modal
   const [newTaskName, setNewTaskName] = useState<string>('');
   const [newTaskDuration, setNewTaskDuration] = useState<number | ''>('');
+  const [newTaskError, setNewTaskError] = useState<string | null>(null);
+
+  const getCurrentBlockRemaining = (): number => {
+    const currentDayData = scheduleData.days[currentDay];
+    const times = currentDayData.times[currentTaskBlock];
+    const total = getBlockDuration(times.startTime, times.endTime);
+    const used = currentDayData.tasks[currentTaskBlock].reduce((sum, t) => sum + t.duration, 0);
+    return Math.max(0, total - used);
+  };
 
   // Calculate block duration in minutes
   const getBlockDuration = (startTime: string, endTime: string): number => {
@@ -211,12 +220,12 @@ export default function SchedulePage() {
     return true;
   };
 
-  // Validate at least one task exists for each energy block
-  const hasAtLeastOnePerBlock = (): boolean => {
+  // Validate at least one task exists in ANY energy block
+  const hasAtLeastOneTask = (): boolean => {
     const dayData = scheduleData.days[currentDay];
     return (
-      dayData.tasks.high.length > 0 &&
-      dayData.tasks.medium.length > 0 &&
+      dayData.tasks.high.length > 0 ||
+      dayData.tasks.medium.length > 0 ||
       dayData.tasks.low.length > 0
     );
   };
@@ -353,13 +362,17 @@ export default function SchedulePage() {
         'Content-Type': 'application/json'
       } as const;
 
+      // Immediately hide the modal for a faster-feeling flow
+      setShowModal(false);
+
       // Expand tasks according to repeat selection
       const selectedDays = getSelectedDays();
 
       // Map frontend status to backend TaskStatus
       const mapStatus = (): 'active' | 'completed' | 'skipped' => 'active';
 
-      for (const day of selectedDays) {
+      // Build promises per day to run in parallel
+      const perDayPromises = selectedDays.map(async (day) => {
         const dayData = scheduleData.days[day];
         const sessionsPayload = [
           { energy_type: 'High', start_time: dayData.times.high.startTime, end_time: dayData.times.high.endTime },
@@ -390,34 +403,40 @@ export default function SchedulePage() {
           low: sessionIds[2]
         };
 
-        // Create tasks under the corresponding sessions (from the 'currentDay' blueprint)
+        // Create tasks under corresponding sessions (from the 'currentDay' blueprint) in parallel
         const source = scheduleData.days[currentDay];
-        for (const block of ['high', 'medium', 'low'] as const) {
-          for (const task of source.tasks[block]) {
-            if (!task.name) continue;
-            await fetch('/api/sessions', {
-              method: 'POST',
-              headers: authHeaders,
-              body: JSON.stringify({
-                session_id: blockToSessionId[block],
-                name: task.name,
-                description: task.description || null,
-                duration_minutes: task.duration,
-                status: mapStatus()
+        const taskRequests: Promise<Response>[] = [];
+        (['high','medium','low'] as const).forEach((block) => {
+          source.tasks[block].forEach((task) => {
+            if (!task.name) return;
+            taskRequests.push(
+              fetch('/api/sessions', {
+                method: 'POST',
+                headers: authHeaders,
+                body: JSON.stringify({
+                  session_id: blockToSessionId[block],
+                  name: task.name,
+                  description: task.description || null,
+                  duration_minutes: task.duration,
+                  status: mapStatus()
+                })
               })
-            });
-          }
-        }
-      }
+            );
+          });
+        });
+        await Promise.all(taskRequests);
+      });
+
+      await Promise.all(perDayPromises);
       
       setSavedSchedule(scheduleData);
       setCurrentStep('overview');
-      setShowModal(false);
       setSuccess('Schedule saved successfully!');
-      setTimeout(() => setSuccess(null), 3000);
+      setTimeout(() => setSuccess(null), 2000);
       await loadTodayBlocks();
     } catch {
       setError('Failed to save schedule. Please try again.');
+      setShowModal(false);
     } finally {
       setLoading(false);
     }
@@ -594,7 +613,9 @@ export default function SchedulePage() {
                 <input
                   type="text"
                   value={newTaskName}
-                  onChange={(e)=>setNewTaskName(e.target.value)}
+                  onChange={(e)=>{
+                    setNewTaskName(e.target.value);
+                  }}
                   placeholder="Enter task name"
                   className="w-full px-3 py-2 rounded-lg bg-white/90 border border-gray-300 text-slate-900 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                 />
@@ -604,7 +625,17 @@ export default function SchedulePage() {
                 <input
                   type="number"
                   value={newTaskDuration}
-                  onChange={(e)=>setNewTaskDuration(e.target.value === '' ? '' : Math.max(1, parseInt(e.target.value) || 0))}
+                  onChange={(e)=>{
+                    const v = e.target.value === '' ? '' : Math.max(1, parseInt(e.target.value) || 0);
+                    setNewTaskDuration(v);
+                    if (v === '') { setNewTaskError(null); return; }
+                    const remaining = getCurrentBlockRemaining();
+                    if (typeof v === 'number' && v > remaining) {
+                      setNewTaskError(`Duration exceeds remaining time by ${v - remaining} min`);
+                    } else {
+                      setNewTaskError(null);
+                    }
+                  }}
                   placeholder="Minutes"
                   min={1}
                   className="w-full px-3 py-2 rounded-lg bg-white/90 border border-gray-300 text-slate-900 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
@@ -614,10 +645,16 @@ export default function SchedulePage() {
                 <button
                   onClick={() => {
                     if (!newTaskName || !newTaskDuration) return;
+                    const remaining = getCurrentBlockRemaining();
+                    const dur = typeof newTaskDuration === 'number' ? newTaskDuration : parseInt(String(newTaskDuration)) || 0;
+                    if (dur > remaining) {
+                      setNewTaskError(`Duration exceeds remaining time by ${dur - remaining} min`);
+                      return;
+                    }
                     const newTask: Task = {
                       id: Date.now().toString(),
                       name: newTaskName,
-                      duration: typeof newTaskDuration === 'number' ? newTaskDuration : parseInt(String(newTaskDuration)) || 0,
+                      duration: dur,
                       description: '',
                       repeat: null,
                       locked: false,
@@ -637,12 +674,16 @@ export default function SchedulePage() {
                     }));
                     setNewTaskName('');
                     setNewTaskDuration('');
+                    setNewTaskError(null);
                   }}
                   className="w-full inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-slate-900 text-white hover:bg-slate-800"
                 >
                   + <span>Add</span>
                 </button>
               </div>
+              {newTaskError && (
+                <div className="md:col-span-7 text-sm text-red-600">{newTaskError}</div>
+              )}
             </div>
 
             {/* Existing editable list (click to edit preserved) */}
@@ -726,8 +767,8 @@ export default function SchedulePage() {
                   <span>Back</span>
                 </button>
                 <button
-                  onClick={() => hasAtLeastOnePerBlock() ? setCurrentStep('repeat') : setError('Add at least one task to each energy block before continuing.')}
-                  className={`inline-flex items-center space-x-2 px-4 py-2 rounded-lg transition-colors ${hasAtLeastOnePerBlock() ? 'bg-slate-900 text-white hover:bg-slate-800' : 'bg-gray-300 text-gray-600 cursor-not-allowed'}`}
+                  onClick={() => hasAtLeastOneTask() ? setCurrentStep('repeat') : setError('Add at least one task to any energy block before continuing.')}
+                  className={`inline-flex items-center space-x-2 px-4 py-2 rounded-lg transition-colors ${hasAtLeastOneTask() ? 'bg-slate-900 text-white hover:bg-slate-800' : 'bg-gray-300 text-gray-600 cursor-not-allowed'}`}
                 >
                   <span>Continue</span>
                   <ArrowRight className="h-4 w-4" />
@@ -963,28 +1004,41 @@ export default function SchedulePage() {
                       onClick={() => { if (editingTaskId !== t.id) setEditingTaskId(t.id); }}
                     >
                       {editingTaskId === t.id ? (
-                        <div className="space-y-2">
-                          <input
-                            defaultValue={t.name}
-                            onBlur={(e)=>updateTaskField(t.id,{ name: e.target.value })}
-                            className="w-full px-3 py-2 rounded bg-white/90 border border-gray-300 text-slate-900"
-                          />
-                          <textarea
-                            defaultValue={t.description || ''}
-                            onBlur={(e)=>updateTaskField(t.id,{ description: e.target.value || null })}
-                            rows={2}
-                            className="w-full px-3 py-2 rounded bg-white/90 border border-gray-300 text-slate-900"
-                          />
-                          <input
-                            type="number"
-                            defaultValue={t.duration_minutes || 0}
-                            onBlur={(e)=>updateTaskField(t.id,{ duration_minutes: parseInt(e.target.value)||0 })}
-                            className="w-full px-3 py-2 rounded bg-white/90 border border-gray-300 text-slate-900"
-                          />
+                        <div className="space-y-3">
+                          <div>
+                            <label className="block text-sm font-medium text-slate-800 mb-1">Task Name</label>
+                            <input
+                              defaultValue={t.name}
+                              onBlur={(e)=>updateTaskField(t.id,{ name: e.target.value })}
+                              className="w-full px-3 py-2 rounded bg-white/90 border border-gray-300 text-slate-900"
+                              aria-label="Task name"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-sm font-medium text-slate-800 mb-1">Description</label>
+                            <textarea
+                              defaultValue={t.description || ''}
+                              onBlur={(e)=>updateTaskField(t.id,{ description: e.target.value || null })}
+                              rows={2}
+                              className="w-full px-3 py-2 rounded bg-white/90 border border-gray-300 text-slate-900"
+                              aria-label="Task description"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-sm font-medium text-slate-800 mb-1">Duration (min)</label>
+                            <input
+                              type="number"
+                              defaultValue={t.duration_minutes || 0}
+                              onBlur={(e)=>updateTaskField(t.id,{ duration_minutes: parseInt(e.target.value)||0 })}
+                              className="w-full px-3 py-2 rounded bg-white/90 border border-gray-300 text-slate-900"
+                              aria-label="Task duration in minutes"
+                              min={0}
+                            />
+                          </div>
                           <div className="text-right">
                             <button onClick={() => setEditingTaskId(null)} className="px-3 py-1 text-sm text-slate-700">Done</button>
-                      </div>
-                  </div>
+                          </div>
+                        </div>
                       ) : (
                         <div className="flex items-center justify-between">
                           <div className="font-medium text-slate-900 truncate max-w-[70%]">{t.name}</div>

@@ -42,6 +42,7 @@ export default function HomePage() {
   const [motivation, setMotivation] = useState<string | null>(null);
   const [energyTheme, setEnergyTheme] = useState<string | null>(null);
   const playClickTimer = useRef<number | null>(null);
+  const [isOutsideBlock, setIsOutsideBlock] = useState(false);
 
   // Mock task data
   const [tasks, setTasks] = useState<TaskItem[]>([]);
@@ -85,7 +86,7 @@ export default function HomePage() {
   const allTasksDone = tasks.every(t => t.done);
   const lastBlockEndMinutes = lastBlockEndMinutesState ?? 22 * 60; // fallback to 22:00 if unknown
   const isAfterLastBlockEnd = getNowMinutes() >= lastBlockEndMinutes;
-  const dayEnded = allTasksDone || isAfterLastBlockEnd;
+  const dayEnded = allTasksDone || isAfterLastBlockEnd || isOutsideBlock;
   const displayCurrentTask = dayEnded ? (allTasksDone ? 'Tasks completed' : 'Tasks have ended') : currentTask;
   const displayNextTask = dayEnded ? 'No upcoming tasks' : nextTask;
 
@@ -122,10 +123,19 @@ export default function HomePage() {
           .eq('user_id', uid)
           .eq('day_of_week', weekday)
           .single();
-        if (!schedule || !schedule.sessions) { setTasks([]); setEnergyTheme(null); return; }
+        if (!schedule || !schedule.sessions) { setTasks([]); setEnergyTheme(null); setIsOutsideBlock(false); return; }
         const toMin = (t:string) => { const [h,m] = t.split(':').map(Number); return h*60+m; };
         const endMins = (schedule.sessions as any[]).map((s:any)=> toMin((s.template?.end_time as string) || '0:0')).filter((n:number)=>!Number.isNaN(n));
         if (endMins.length) setLastBlockEndMinutesState(Math.max(...endMins));
+        // Determine if current time sits in any block
+        const now = new Date();
+        const nowMin = now.getHours()*60 + now.getMinutes();
+        const blocks = (schedule.sessions as any[]).map((s:any)=>({
+          s: toMin((s.template?.start_time as string)||'00:00'),
+          e: toMin((s.template?.end_time as string)||'00:00')
+        }));
+        const inAny = blocks.some(b => b.s <= b.e ? (nowMin >= b.s && nowMin < b.e) : (nowMin >= b.s || nowMin < b.e));
+        setIsOutsideBlock(!inAny);
         const wantedEnergy = currentBlock === 'morning' ? 'High' : currentBlock === 'afternoon' ? 'Medium' : 'Low';
         const target = (schedule.sessions as any[]).find((s:any)=> (s.template?.energy_type as string) === wantedEnergy);
         if (!target) { setTasks([]); return; }
@@ -178,7 +188,7 @@ export default function HomePage() {
   // Timer countdown with freeze/pause conditions
   useEffect(() => {
     if (isTimerFrozen || isPaused) return; // do not tick when frozen/paused
-    if (allTasksDone || isAfterLastBlockEnd) {
+    if (allTasksDone || isAfterLastBlockEnd || isOutsideBlock) {
       setTimeRemaining(0);
       setIsTimerFrozen(true);
       return;
@@ -197,7 +207,7 @@ export default function HomePage() {
 
     const timer = setInterval(tick, 1000);
     return () => clearInterval(timer);
-  }, [currentBlock, isTimerFrozen, isPaused, allTasksDone, isAfterLastBlockEnd]);
+  }, [currentBlock, isTimerFrozen, isPaused, allTasksDone, isAfterLastBlockEnd, isOutsideBlock]);
 
   const handleTaskComplete = () => {
     setTimeRemaining(25 * 60); // Reset timer
@@ -263,13 +273,27 @@ export default function HomePage() {
       return;
     }
     playClickTimer.current = window.setTimeout(() => {
-      if (isTimerFrozen) setIsTimerFrozen(false);
-      setIsPaused(false);
+      if (!isOutsideBlock) {
+        if (isTimerFrozen) setIsTimerFrozen(false);
+        setIsPaused(false);
+      }
       playClickTimer.current = null;
     }, 220);
   };
 
   const textColors = getBlockTextColors(currentBlock);
+  const effectiveMotivation = isOutsideBlock
+    ? 'Outside all blocks — use this time to rest.'
+    : (motivation || getEnergyMessage(energyLevel));
+
+  // Lock body scroll when sidebar open
+  useEffect(() => {
+    if (insightsOpen) {
+      const prev = document.body.style.overflow;
+      document.body.style.overflow = 'hidden';
+      return () => { document.body.style.overflow = prev; };
+    }
+  }, [insightsOpen]);
 
   return (
     <AuthGuard>
@@ -295,12 +319,13 @@ export default function HomePage() {
             Good {currentBlock === 'morning' ? 'Morning' : currentBlock === 'afternoon' ? 'Afternoon' : 'Night'}{username ? `, ${username}` : ''}!
           </h1>
           <p className={`text-lg ${textColors.secondary} mb-4`}>
-            {motivation || getEnergyMessage(energyLevel)}
+            {effectiveMotivation}
           </p>
           <div className="inline-flex items-center space-x-2 px-4 py-2 bg-white/60 rounded-lg backdrop-blur-sm shadow-sm">
             <span className="text-sm font-medium text-gray-700">Current Block:</span>
             <span className="text-sm font-semibold text-gray-900">
-              {isAfterLastBlockEnd ? 'All blocks completed' : (currentEnergyLabel || (energyLevel.charAt(0).toUpperCase()+energyLevel.slice(1)))}{!isAfterLastBlockEnd && currentBlockRange ? ` • ${currentBlockRange}` : ''}
+              {isOutsideBlock ? 'Outside all blocks — rest' : isAfterLastBlockEnd ? 'All blocks completed' : (currentEnergyLabel || (energyLevel.charAt(0).toUpperCase()+energyLevel.slice(1)))}
+              {!isOutsideBlock && !isAfterLastBlockEnd && currentBlockRange ? ` • ${currentBlockRange}` : ''}
             </span>
           </div>
         </motion.div>
@@ -357,7 +382,7 @@ export default function HomePage() {
           <span className="font-semibold text-gray-900">AI Insights</span>
           <button className="ml-auto text-gray-500 hover:text-gray-700" onClick={() => setInsightsOpen(false)}>Close</button>
         </div>
-        <div className="p-4 overflow-y-auto">
+        <div className="p-4 overflow-y-auto h-[calc(100%-4rem)] overscroll-contain">
           <div className="mb-6">
             <h3 className="text-sm font-semibold text-gray-900 mb-3">Today's Tasks</h3>
             <ul className="space-y-2">

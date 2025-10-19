@@ -37,7 +37,10 @@ export default function AIWidget() {
       // Get the current session token for authentication
       const { data: { session } } = await supabase.auth.getSession();
       if (!session?.access_token) {
-        throw new Error('No active session found');
+        // Not authenticated: render a quiet empty state without throwing
+        setInsights(null);
+        setError('Sign in to view insights');
+        return;
       }
       
       const response = await fetch('/api/insights', {
@@ -48,14 +51,15 @@ export default function AIWidget() {
       });
       const data = await response.json();
       
-      if (!response.ok || !data.ok) {
-        throw new Error(data.error || 'Failed to fetch insights');
+      if (!response.ok || !data?.ok) {
+        setInsights(null);
+        setError(data?.error || 'Failed to fetch insights');
+        return;
       }
       
       setInsights(data.data);
     } catch (err) {
       setError('Failed to load personalized insights. Please try again.');
-      console.error('Error fetching insights:', err);
     } finally {
       setLoading(false);
       setRefreshing(false);
