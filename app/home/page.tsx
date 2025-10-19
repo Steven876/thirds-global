@@ -83,7 +83,7 @@ export default function HomePage() {
     return 24 * 60 - 1; // 23:59 for night
   };
 
-  const allTasksDone = tasks.every(t => t.done);
+  const allTasksDone = tasks.length > 0 && tasks.every(t => t.done || t.status === 'completed' || t.status === 'skipped');
   const lastBlockEndMinutes = lastBlockEndMinutesState ?? 22 * 60; // fallback to 22:00 if unknown
   const isAfterLastBlockEnd = getNowMinutes() >= lastBlockEndMinutes;
   const dayEnded = allTasksDone || isAfterLastBlockEnd || isOutsideBlock;
@@ -286,6 +286,8 @@ export default function HomePage() {
     ? 'Outside all blocks — use this time to rest.'
     : (motivation || getEnergyMessage(energyLevel));
 
+  const controlsDisabled = dayEnded || tasks.length === 0;
+
   // Lock body scroll when sidebar open
   useEffect(() => {
     if (insightsOpen) {
@@ -339,8 +341,10 @@ export default function HomePage() {
         >
           {/* Current Task above */}
           <div className="text-center mb-4">
-            <div className={`text-sm ${textColors.secondary}`}>Current task</div>
-            <div className={`text-xl font-semibold ${textColors.primary}`}>{displayCurrentTask}</div>
+            <div className={`text-sm ${textColors.secondary}`}>{dayEnded ? 'Status' : 'Current task'}</div>
+            <div className={`text-xl font-semibold ${textColors.primary}`}>
+              {dayEnded ? (allTasksDone ? 'All tasks completed' : 'Outside all blocks') : displayCurrentTask}
+            </div>
           </div>
 
           {/* Timer (no white background) */}
@@ -361,13 +365,13 @@ export default function HomePage() {
 
           {/* Controls: Pause / Skip / Continue (icons) */}
           <div className="mt-8 flex items-center gap-6">
-            <button onClick={handlePauseToggle} className="h-12 w-12 rounded-full bg-white/70 backdrop-blur-sm border border-white/30 flex items-center justify-center text-slate-900 hover:bg-white" aria-label="Pause/Resume">
+            <button onClick={handlePauseToggle} disabled={controlsDisabled} className="h-12 w-12 rounded-full bg-white/70 backdrop-blur-sm border border-white/30 flex items-center justify-center text-slate-900 hover:bg-white disabled:opacity-50 disabled:cursor-not-allowed" aria-label="Pause/Resume">
               {isPaused ? <Play className="h-5 w-5" /> : <Pause className="h-5 w-5" />}
             </button>
-            <button onClick={handleSkip} className="h-12 w-12 rounded-full bg-white/70 backdrop-blur-sm border border-white/30 flex items-center justify-center text-slate-900 hover:bg-white" aria-label="Skip">
+            <button onClick={handleSkip} disabled={controlsDisabled} className="h-12 w-12 rounded-full bg-white/70 backdrop-blur-sm border border-white/30 flex items-center justify-center text-slate-900 hover:bg-white disabled:opacity-50 disabled:cursor-not-allowed" aria-label="Skip">
               <SkipForward className="h-5 w-5" />
             </button>
-            <button onClick={handleComplete} className="h-12 w-12 rounded-full bg-black text-white shadow-md flex items-center justify-center hover:bg-black/90" aria-label="Complete and next task">
+            <button onClick={handleComplete} disabled={controlsDisabled} className="h-12 w-12 rounded-full bg-black text-white shadow-md flex items-center justify-center hover:bg-black/90 disabled:opacity-50 disabled:cursor-not-allowed" aria-label="Complete and next task">
               <ArrowRight className="h-5 w-5" />
             </button>
           </div>
