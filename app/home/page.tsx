@@ -22,6 +22,7 @@ import TaskList from '@/components/TaskList';
 import AIWidget from '@/components/AIWidget';
 import ErrorMessage from '@/components/ErrorMessage';
 import { getCurrentBlock, getEnergyMessage, formatRange, getBlockTheme, getBlockTextColors } from '@/lib/time';
+import { Pause, SkipForward, Play } from 'lucide-react';
 import { EnergyLevel, TaskItem } from '@/lib/types';
 import { supabase } from '@/lib/supabaseClient';
 
@@ -34,6 +35,10 @@ export default function HomePage() {
   const [insightsOpen, setInsightsOpen] = useState(false);
   const [isTimerFrozen, setIsTimerFrozen] = useState(false);
   const [username, setUsername] = useState<string | null>(null);
+  const [isPaused, setIsPaused] = useState(false);
+  const [lastBlockEndMinutesState, setLastBlockEndMinutesState] = useState<number | null>(null);
+  const [currentBlockRange, setCurrentBlockRange] = useState<string | null>(null);
+  const [currentEnergyLabel, setCurrentEnergyLabel] = useState<'High'|'Medium'|'Low' | null>(null);
 
   // Mock task data
   const [tasks, setTasks] = useState<TaskItem[]>([]);
@@ -75,7 +80,7 @@ export default function HomePage() {
   };
 
   const allTasksDone = tasks.every(t => t.done);
-  const lastBlockEndMinutes = 22 * 60; // 22:00 assumed end of last block
+  const lastBlockEndMinutes = lastBlockEndMinutesState ?? 22 * 60; // fallback to 22:00 if unknown
   const isAfterLastBlockEnd = getNowMinutes() >= lastBlockEndMinutes;
   const dayEnded = allTasksDone || isAfterLastBlockEnd;
   const displayCurrentTask = dayEnded ? (allTasksDone ? 'Tasks completed' : 'Tasks have ended') : currentTask;
@@ -119,11 +124,17 @@ export default function HomePage() {
           .select('id, energy_type, start_time, end_time')
           .in('id', templateIds);
         const tmplById: Record<number, { id:number; energy_type:'High'|'Medium'|'Low'; start_time:string; end_time:string }> = Object.fromEntries((templates||[]).map(t=>[t.id, t]));
+        // compute last block end (max end among templates)
+        const toMin = (t:string) => { const [h,m] = t.split(':').map(Number); return h*60+m; };
+        const endMins = (templates||[]).map(t=>toMin(t.end_time)).filter(n=>!Number.isNaN(n));
+        if (endMins.length) setLastBlockEndMinutesState(Math.max(...endMins));
         // pick the session matching currentBlock
         const wantedEnergy = currentBlock === 'morning' ? 'High' : currentBlock === 'afternoon' ? 'Medium' : 'Low';
         const targetSession = sessions.find(s => tmplById[s.template_id]?.energy_type === wantedEnergy);
         if (!targetSession) { setTasks([]); return; }
         const tmpl = tmplById[targetSession.template_id];
+        setCurrentBlockRange(formatRange(tmpl.start_time.slice(0,5), tmpl.end_time.slice(0,5)));
+        setCurrentEnergyLabel(tmpl.energy_type);
         const { data: dbTasks } = await supabase
           .from('tasks')
           .select('id, name, description, duration_minutes, status')
@@ -148,9 +159,9 @@ export default function HomePage() {
     loadTasks();
   }, [currentBlock]);
 
-  // Timer countdown with freeze conditions
+  // Timer countdown with freeze/pause conditions
   useEffect(() => {
-    if (isTimerFrozen) return; // do not tick when frozen
+    if (isTimerFrozen || isPaused) return; // do not tick when frozen/paused
     if (allTasksDone || isAfterLastBlockEnd) {
       setTimeRemaining(0);
       setIsTimerFrozen(true);
@@ -170,7 +181,7 @@ export default function HomePage() {
 
     const timer = setInterval(tick, 1000);
     return () => clearInterval(timer);
-  }, [currentBlock, isTimerFrozen, allTasksDone]);
+  }, [currentBlock, isTimerFrozen, isPaused, allTasksDone, isAfterLastBlockEnd]);
 
   const handleTaskComplete = () => {
     setTimeRemaining(25 * 60); // Reset timer
@@ -221,6 +232,11 @@ export default function HomePage() {
     }
   };
 
+  const handlePauseToggle = () => {
+    if (isTimerFrozen) return;
+    setIsPaused(p => !p);
+  };
+
   const textColors = getBlockTextColors(currentBlock);
 
   return (
@@ -229,7 +245,7 @@ export default function HomePage() {
     <div className={`min-h-screen gradient-transition animated-gradient ${getBlockTheme(currentBlock)} relative overflow-hidden`}>
       <div className="grain-overlay"></div>
       
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 pt-24">
         {error && (
           <div className="mb-6">
             <ErrorMessage message={error} onDismiss={() => setError(null)} />
@@ -244,15 +260,15 @@ export default function HomePage() {
           className="text-center mb-8"
         >
           <h1 className={`text-4xl font-bold ${textColors.primary} mb-2`}>
-            Good {currentBlock === 'morning' ? 'Morning' : currentBlock === 'afternoon' ? 'Afternoon' : 'Evening'}{username ? `, ${username}` : ''}!
+            Good {currentBlock === 'morning' ? 'Morning' : currentBlock === 'afternoon' ? 'Afternoon' : 'Night'}{username ? `, ${username}` : ''}!
           </h1>
           <p className={`text-lg ${textColors.secondary} mb-4`}>
             {getEnergyMessage(energyLevel)}
           </p>
           <div className="inline-flex items-center space-x-2 px-4 py-2 bg-white/60 rounded-lg backdrop-blur-sm shadow-sm">
             <span className="text-sm font-medium text-gray-700">Current Block:</span>
-            <span className="text-sm font-semibold text-gray-900 capitalize">
-              {currentBlock} • {formatRange('06:00', '12:00')}
+            <span className="text-sm font-semibold text-gray-900">
+              {isAfterLastBlockEnd ? 'All blocks completed' : (currentEnergyLabel || (energyLevel.charAt(0).toUpperCase()+energyLevel.slice(1)))}{!isAfterLastBlockEnd && currentBlockRange ? ` • ${currentBlockRange}` : ''}
             </span>
           </div>
         </motion.div>
@@ -286,19 +302,16 @@ export default function HomePage() {
             <div className={`text-lg font-medium ${textColors.primary}`}>{displayNextTask}</div>
           </div>
 
-          {/* Skip / Complete Controls */}
-          <div className="mt-8 flex gap-4">
-            <button
-              onClick={handleSkip}
-              className="inline-flex items-center justify-center px-6 py-3 rounded-lg bg-slate-900/70 text-white hover:bg-slate-900/80 backdrop-blur-sm shadow-sm"
-            >
-              Skip
+          {/* Controls: Pause / Skip / Continue (icons) */}
+          <div className="mt-8 flex items-center gap-6">
+            <button onClick={handlePauseToggle} className="h-12 w-12 rounded-full bg-white/70 backdrop-blur-sm border border-white/30 flex items-center justify-center text-slate-900 hover:bg-white" aria-label="Pause/Resume">
+              {isPaused ? <Play className="h-5 w-5" /> : <Pause className="h-5 w-5" />}
             </button>
-            <button
-              onClick={handleComplete}
-              className="inline-flex items-center justify-center px-6 py-3 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 shadow-sm"
-            >
-              Complete
+            <button onClick={handleSkip} className="h-12 w-12 rounded-full bg-white/70 backdrop-blur-sm border border-white/30 flex items-center justify-center text-slate-900 hover:bg-white" aria-label="Skip">
+              <SkipForward className="h-5 w-5" />
+            </button>
+            <button onClick={()=>{ if (isTimerFrozen){ setIsTimerFrozen(false); } setIsPaused(false); }} className="h-12 w-12 rounded-full bg-white/70 backdrop-blur-sm border border-white/30 flex items-center justify-center text-slate-900 hover:bg-white" aria-label="Continue">
+              <Play className="h-5 w-5" />
             </button>
           </div>
         </motion.div>
@@ -307,7 +320,7 @@ export default function HomePage() {
       </main>
 
       {/* Floating AI insights panel now shows today's tasks first */}
-      <div className={`fixed top-0 right-0 h-full w-80 bg-white/30 backdrop-blur-[1px] shadow-2xl border-l border-white/20 transform transition-transform duration-300 ease-in-out z-40 ${insightsOpen ? 'translate-x-0' : 'translate-x-full'}`}>
+      <div className={`fixed top-0 right-0 h-full w-80 bg-white/30 backdrop-blur-[1px] shadow-2xl border-l border-white/20 transform transition-transform duration-300 ease-in-out z-40 ${insightsOpen ? 'translate-x-0' : 'translate-x-full'}`} onClick={(e)=> e.stopPropagation()}>
         <div className="h-16 flex items-center px-4 border-b border-gray-200">
           <span className="font-semibold text-gray-900">AI Insights</span>
           <button className="ml-auto text-gray-500 hover:text-gray-700" onClick={() => setInsightsOpen(false)}>Close</button>
@@ -363,6 +376,9 @@ export default function HomePage() {
             <span className="block h-1.5 w-1.5 bg-white rounded-full"></span>
           </div>
         </button>
+      )}
+      {insightsOpen && (
+        <div className="fixed inset-0 z-30" onClick={()=> setInsightsOpen(false)} />
       )}
     </div>
     </ScheduleGuard>

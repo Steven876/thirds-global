@@ -18,7 +18,7 @@ export function getCurrentBlock(now: Date = new Date()): Block {
   
   if (hour >= 5 && hour < 12) {
     return 'morning';
-  } else if (hour >= 12 && hour < 18) {
+  } else if (hour >= 12 && hour < 19) {
     return 'afternoon';
   } else {
     return 'night';

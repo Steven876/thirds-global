@@ -78,7 +78,7 @@ export default function SchedulePage() {
   const [insightsOpen, setInsightsOpen] = useState(false);
   const [currentStep, setCurrentStep] = useState<'times' | 'tasks' | 'repeat' | 'overview'>('times');
   const [currentTaskBlock, setCurrentTaskBlock] = useState<'high' | 'medium' | 'low'>('high');
-  const [currentDay, setCurrentDay] = useState<string>('Monday');
+  const [currentDay, setCurrentDay] = useState<string>(new Date().toLocaleString('en-US', { weekday: 'long' }));
   const [showModal, setShowModal] = useState(false);
   const [showCancelConfirm, setShowCancelConfirm] = useState(false);
   const [, setLoading] = useState(false);
@@ -157,12 +157,43 @@ export default function SchedulePage() {
       return false;
     }
 
-    // Check if start time is before end time for each block
-    if (high.startTime >= high.endTime || medium.startTime >= medium.endTime || low.startTime >= low.endTime) {
+    // 24h HH:MM minute-based comparisons (support overnight ranges like 21:00 → 01:00)
+    const toMin = (t: string) => {
+      if (!t) return NaN;
+      const [h, m] = t.split(':').map(Number);
+      return h * 60 + m;
+    };
+    const hS = toMin(high.startTime), hE = toMin(high.endTime);
+    const mS = toMin(medium.startTime), mE = toMin(medium.endTime);
+    const lS = toMin(low.startTime), lE = toMin(low.endTime);
+
+    if ([hS, hE, mS, mE, lS, lE].some(n => Number.isNaN(n))) {
+      setError('Please enter valid times in HH:MM format');
+      return false;
+    }
+
+    // Duration must be > 0; allow overnight by wrapping to next day
+    const duration = (s: number, e: number) => (e - s + 1440) % 1440;
+    if (duration(hS, hE) === 0 || duration(mS, mE) === 0 || duration(lS, lE) === 0) {
       setError('Start time must be before end time for each block');
       return false;
     }
 
+    // Overlap detection on a 24h ring: split wrapped intervals into two segments
+    const splitSegs = (s: number, e: number): Array<{s:number;e:number}> => {
+      if (e > s) return [{ s, e }];
+      // wraps midnight
+      return [{ s, e: 1440 }, { s: 0, e }];
+    };
+    const segsH = splitSegs(hS, hE);
+    const segsM = splitSegs(mS, mE);
+    const segsL = splitSegs(lS, lE);
+    const segsOverlap = (A: Array<{s:number;e:number}>, B: Array<{s:number;e:number}>) =>
+      A.some(a => B.some(b => a.s < b.e && b.s < a.e));
+    if (segsOverlap(segsH, segsM) || segsOverlap(segsH, segsL) || segsOverlap(segsM, segsL)) {
+      setError('Energy block times cannot overlap. Please adjust the times.');
+      return false;
+    }
     return true;
   };
 
@@ -295,6 +326,7 @@ export default function SchedulePage() {
     setSuccess('Block times updated across all selected days.');
     setTimeout(() => setSuccess(null), 3000);
     setCurrentStep('tasks');
+    // Refresh blocks view live when saving later
   };
 
   // Save tasks for current block
@@ -887,15 +919,15 @@ export default function SchedulePage() {
     <div className={`min-h-screen gradient-transition animated-gradient ${getBlockTheme(currentBlock)} relative overflow-hidden`}>
       <div className="grain-overlay"></div>
       
-      <main className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-10">
+      <main className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-10 pt-24">
         {/* Header */}
         <div className="flex items-center justify-center mb-8">
           <h1 className="text-3xl font-bold text-slate-900">
-            {dayBlocks !== null ? `${username ? username + "'s" : 'Your'} Schedule` : 'Create Your Schedule'}
+            {dayBlocks !== null ? `${username ? username + "'s" : 'Your'} Schedule` : ''}
           </h1>
         </div>
         {error && (
-          <div className="mb-6">
+          <div className="fixed top-32 left-1/2 -translate-x-1/2 z-[9999] w-full max-w-xl px-4">
             <ErrorMessage message={error} onDismiss={() => setError(null)} />
           </div>
         )}
@@ -913,14 +945,24 @@ export default function SchedulePage() {
         ) : (
           <div className="text-center py-12">
             <Calendar className="h-16 w-16 text-gray-400 mx-auto mb-4" />
-            <h2 className="text-2xl font-bold text-gray-900 mb-2">Create Your Schedule</h2>
-            <p className="text-gray-600 mb-6">Set up your energy-based daily schedule</p>
+            <h2 className="text-2xl font-bold text-gray-900 mb-2">No tasks are scheduled for today</h2>
+            <p className="text-gray-600 mb-6">Add tasks to your schedule to get started</p>
             <button
-              onClick={() => setShowModal(true)}
+              onClick={() => {
+                setScheduleData(prev => ({
+                  ...prev,
+                  repeat: {
+                    frequency: 'custom',
+                    days: Array.from(new Set([...(prev.repeat.days || []), currentDay]))
+                  }
+                }));
+                setCurrentStep('tasks');
+                setShowModal(true);
+              }}
               className="inline-flex items-center space-x-2 px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
             >
               <Plus className="h-4 w-4" />
-              <span>Start Building</span>
+              <span>Add Tasks</span>
             </button>
           </div>
         )}
