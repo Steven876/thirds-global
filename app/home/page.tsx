@@ -39,6 +39,7 @@ export default function HomePage() {
   const [lastBlockEndMinutesState, setLastBlockEndMinutesState] = useState<number | null>(null);
   const [currentBlockRange, setCurrentBlockRange] = useState<string | null>(null);
   const [currentEnergyLabel, setCurrentEnergyLabel] = useState<'High'|'Medium'|'Low' | null>(null);
+  const [motivation, setMotivation] = useState<string | null>(null);
 
   // Mock task data
   const [tasks, setTasks] = useState<TaskItem[]>([]);
@@ -98,7 +99,7 @@ export default function HomePage() {
     load();
   }, []);
 
-  // Load today's tasks from DB for the current block
+  // Load today's schedule (joined select) and pick the current block's tasks
   useEffect(() => {
     const loadTasks = async () => {
       try {
@@ -106,48 +107,37 @@ export default function HomePage() {
         const uid = sessionData.session?.user?.id;
         if (!uid) return;
         const weekday = new Date().toLocaleString('en-US', { weekday: 'long' });
-        const { data: scheduleRow } = await supabase
+        const { data: schedule } = await supabase
           .from('schedules')
-          .select('id')
+          .select(`
+            id,
+            sessions (
+              id,
+              template:session_templates!inner ( id, energy_type, start_time, end_time ),
+              tasks ( id, name, description, duration_minutes, status )
+            )
+          `)
           .eq('user_id', uid)
           .eq('day_of_week', weekday)
           .single();
-        if (!scheduleRow) { setTasks([]); return; }
-        const { data: sessions } = await supabase
-          .from('sessions')
-          .select('id, template_id')
-          .eq('schedule_id', scheduleRow.id);
-        if (!sessions) { setTasks([]); return; }
-        const templateIds = sessions.map(s => s.template_id);
-        const { data: templates } = await supabase
-          .from('session_templates')
-          .select('id, energy_type, start_time, end_time')
-          .in('id', templateIds);
-        const tmplById: Record<number, { id:number; energy_type:'High'|'Medium'|'Low'; start_time:string; end_time:string }> = Object.fromEntries((templates||[]).map(t=>[t.id, t]));
-        // compute last block end (max end among templates)
+        if (!schedule || !schedule.sessions) { setTasks([]); return; }
         const toMin = (t:string) => { const [h,m] = t.split(':').map(Number); return h*60+m; };
-        const endMins = (templates||[]).map(t=>toMin(t.end_time)).filter(n=>!Number.isNaN(n));
+        const endMins = (schedule.sessions as any[]).map((s:any)=> toMin((s.template?.end_time as string) || '0:0')).filter((n:number)=>!Number.isNaN(n));
         if (endMins.length) setLastBlockEndMinutesState(Math.max(...endMins));
-        // pick the session matching currentBlock
         const wantedEnergy = currentBlock === 'morning' ? 'High' : currentBlock === 'afternoon' ? 'Medium' : 'Low';
-        const targetSession = sessions.find(s => tmplById[s.template_id]?.energy_type === wantedEnergy);
-        if (!targetSession) { setTasks([]); return; }
-        const tmpl = tmplById[targetSession.template_id];
-        setCurrentBlockRange(formatRange(tmpl.start_time.slice(0,5), tmpl.end_time.slice(0,5)));
-        setCurrentEnergyLabel(tmpl.energy_type);
-        const { data: dbTasks } = await supabase
-          .from('tasks')
-          .select('id, name, description, duration_minutes, status')
-          .eq('session_id', targetSession.id)
-          .order('id', { ascending: true });
+        const target = (schedule.sessions as any[]).find((s:any)=> (s.template?.energy_type as string) === wantedEnergy);
+        if (!target) { setTasks([]); return; }
+        setCurrentBlockRange(formatRange(((target.template?.start_time as string)||'00:00').slice(0,5), ((target.template?.end_time as string)||'00:00').slice(0,5)));
+        setCurrentEnergyLabel((target.template?.energy_type as any) || null);
+        const dbTasks = (target.tasks as any[]) || [];
         const energyMap = { High: 'high', Medium: 'medium', Low: 'low' } as const;
-        const mapped: TaskItem[] = (dbTasks||[]).map(t => ({
+        const mapped: TaskItem[] = (dbTasks||[]).map((t:any) => ({
           id: t.id,
           label: t.name,
-          range: formatRange(tmpl.start_time.slice(0,5), tmpl.end_time.slice(0,5)),
-          energy: energyMap[tmpl.energy_type],
+          range: currentBlockRange || '',
+          energy: energyMap[((target.template?.energy_type as string) || 'Low') as 'High'|'Medium'|'Low'],
           done: t.status === 'completed',
-          status: t.status as any
+          status: t.status
         }));
         setTasks(mapped);
         setCurrentTaskIndex(0);
@@ -157,6 +147,21 @@ export default function HomePage() {
       }
     };
     loadTasks();
+  }, [currentBlock]);
+
+  // Fetch AI motivational line (based on energy + last day/week metrics)
+  useEffect(() => {
+    const loadMotivation = async () => {
+      try {
+        const res = await fetch('/api/insights');
+        const js = await res.json();
+        if (js?.ok && js?.data?.motivation) setMotivation(js.data.motivation);
+        else if (Array.isArray(js?.data?.suggestions) && js.data.suggestions.length) setMotivation(js.data.suggestions[0]);
+      } catch {
+        setMotivation(null);
+      }
+    };
+    loadMotivation();
   }, [currentBlock]);
 
   // Timer countdown with freeze/pause conditions
@@ -263,7 +268,7 @@ export default function HomePage() {
             Good {currentBlock === 'morning' ? 'Morning' : currentBlock === 'afternoon' ? 'Afternoon' : 'Night'}{username ? `, ${username}` : ''}!
           </h1>
           <p className={`text-lg ${textColors.secondary} mb-4`}>
-            {getEnergyMessage(energyLevel)}
+            {motivation || getEnergyMessage(energyLevel)}
           </p>
           <div className="inline-flex items-center space-x-2 px-4 py-2 bg-white/60 rounded-lg backdrop-blur-sm shadow-sm">
             <span className="text-sm font-medium text-gray-700">Current Block:</span>

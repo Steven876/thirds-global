@@ -41,7 +41,21 @@ interface UserDataSummary {
     sleepTime: string | null;
     hasSchedule: boolean;
   };
+  // Task completion velocity and windows
+  completionVelocity: {
+    byHour: Array<{ hour: number; completed: number; avgDuration: number }>; // hour: 0-23
+    fastestHour?: number; // smallest avg duration with a minimum sample size
+    fastestAvg?: number;
+    highestThroughputHour?: number; // most completed tasks per hour
+  };
+  highBlock?: { start: string; end: string } | null;
 }
+
+type Proposal = {
+  type: 'shift_high_block';
+  target: { start: string; end: string };
+  rationale: string;
+};
 
 export async function GET(request: NextRequest) {
   try {
@@ -63,16 +77,23 @@ export async function GET(request: NextRequest) {
     
     // Generate AI-powered insights
     let suggestions: string[] = [];
+    let proposals: Proposal[] = [];
+    let motivation: string | undefined = undefined;
     try {
       suggestions = await generateAISuggestions(userDataSummary);
+      const p = generateScheduleProposals(userDataSummary);
+      proposals = p;
+      motivation = await generateMotivationalMessage(userDataSummary);
     } catch (aiError) {
       console.warn('AI service failed, falling back to rule-based suggestions:', aiError);
       suggestions = generateRuleBasedSuggestions(userDataSummary);
+      proposals = generateScheduleProposals(userDataSummary);
+      motivation = generateRuleBasedMotivation(userDataSummary);
     }
 
     const response: ApiResponse<InsightsResponse> = {
       ok: true,
-      data: { suggestions }
+      data: { suggestions, proposals, motivation }
     };
 
     return NextResponse.json(response);
@@ -85,6 +106,48 @@ export async function GET(request: NextRequest) {
     };
 
     return NextResponse.json(response, { status: 500 });
+  }
+}
+
+// Allow applying proposals to update the user's schedule template
+export async function POST(request: NextRequest) {
+  try {
+    const supabase = getSupabaseFromRequest(request);
+    const body = await request.json();
+    const { type, target } = body || {};
+
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return NextResponse.json({ ok: false, error: 'Authentication required' }, { status: 401 });
+
+    if (type !== 'shift_high_block' || !target?.start || !target?.end) {
+      return NextResponse.json({ ok: false, error: 'Invalid proposal payload' }, { status: 400 });
+    }
+
+    // Upsert the High energy template for this user
+    const { data: existing } = await supabase
+      .from('session_templates')
+      .select('id')
+      .eq('user_id', user.id)
+      .eq('energy_type', 'High')
+      .limit(1)
+      .maybeSingle();
+
+    if (existing?.id) {
+      const { error: updErr } = await supabase
+        .from('session_templates')
+        .update({ start_time: target.start, end_time: target.end })
+        .eq('id', existing.id);
+      if (updErr) throw updErr;
+    } else {
+      const { error: insErr } = await supabase
+        .from('session_templates')
+        .insert({ user_id: user.id, energy_type: 'High', start_time: target.start, end_time: target.end });
+      if (insErr) throw insErr;
+    }
+
+    return NextResponse.json({ ok: true });
+  } catch (e) {
+    return NextResponse.json({ ok: false, error: 'Failed to apply proposal' }, { status: 500 });
   }
 }
 
@@ -109,6 +172,15 @@ async function fetchUserDataSummary(supabase: any, userId: string): Promise<User
     .from('schedules')
     .select('wake_time, sleep_time')
     .eq('user_id', userId)
+    .limit(1)
+    .single();
+
+  // Determine current High energy block window (if any)
+  const { data: highBlockTemplate } = await supabase
+    .from('session_templates')
+    .select('start_time, end_time')
+    .eq('user_id', userId)
+    .eq('energy_type', 'High')
     .limit(1)
     .single();
 
@@ -217,6 +289,28 @@ async function fetchUserDataSummary(supabase: any, userId: string): Promise<User
   // Calculate consistency score (simplified)
   const consistencyScore = totalSessions > 0 ? Math.min(100, (completedTasks / Math.max(totalTasks, 1)) * 100) : 0;
 
+  // Completion velocity by hour
+  const byHourMap: Record<number, { completed: number; totalDuration: number }> = {};
+  sessions.forEach((session: any) => {
+    const tasks = session.tasks || [];
+    const startHour = parseInt((session.session_templates?.start_time || '0:0').toString().split(':')[0], 10) || 0;
+    const completed = tasks.filter((t: any) => t.status === 'completed');
+    const totalDur = completed.reduce((a: number, t: any) => a + (t.duration_minutes || 0), 0);
+    if (!byHourMap[startHour]) byHourMap[startHour] = { completed: 0, totalDuration: 0 };
+    byHourMap[startHour].completed += completed.length;
+    byHourMap[startHour].totalDuration += totalDur;
+  });
+  const byHour = Array.from({ length: 24 }, (_, h) => {
+    const row = byHourMap[h] || { completed: 0, totalDuration: 0 };
+    const avg = row.completed > 0 ? row.totalDuration / row.completed : 0;
+    return { hour: h, completed: row.completed, avgDuration: avg };
+  });
+  // Pick fastest hour with at least 3 completed tasks as a signal; else highest throughput
+  const eligible = byHour.filter(h => h.completed >= 3).sort((a,b) => a.avgDuration - b.avgDuration);
+  const fastestHour = eligible[0]?.hour;
+  const fastestAvg = eligible[0]?.avgDuration;
+  const highestThroughputHour = byHour.slice().sort((a,b)=> b.completed - a.completed)[0]?.hour;
+
   return {
     totalSessions,
     totalFocusTime,
@@ -233,7 +327,14 @@ async function fetchUserDataSummary(supabase: any, userId: string): Promise<User
       wakeTime: scheduleData?.wake_time || null,
       sleepTime: scheduleData?.sleep_time || null,
       hasSchedule: !!scheduleData
-    }
+    },
+    completionVelocity: {
+      byHour,
+      fastestHour,
+      fastestAvg,
+      highestThroughputHour
+    },
+    highBlock: highBlockTemplate ? { start: highBlockTemplate.start_time, end: highBlockTemplate.end_time } : null
   };
 }
 
@@ -251,12 +352,17 @@ User Data Summary:
 - Recent activity: ${userData.recentTrends.lastWeekSessions} sessions this week, ${Math.round(userData.recentTrends.lastWeekFocusTime / 3600 * 10) / 10} hours focus time
 - Consistency score: ${Math.round(userData.recentTrends.consistencyScore)}%
 - Schedule: ${userData.scheduleData.hasSchedule ? `Wake at ${userData.scheduleData.wakeTime}, Sleep at ${userData.scheduleData.sleepTime}` : 'No schedule set'}
+ - Completion velocity by hour: ${userData.completionVelocity.byHour.map(h=>`${h.hour}:00 → ${h.completed} completed, ${Math.round(h.avgDuration)}m avg`).join('; ')}
+ - Fastest hour: ${userData.completionVelocity.fastestHour ?? 'n/a'} (avg ${Math.round(userData.completionVelocity.fastestAvg || 0)}m)
+ - Highest throughput hour: ${userData.completionVelocity.highestThroughputHour ?? 'n/a'}
+ - Current High energy block: ${userData.highBlock ? `${userData.highBlock.start}–${userData.highBlock.end}` : 'n/a'}
 
 Provide personalized, actionable recommendations. Focus on:
 1. Optimal scheduling based on energy patterns
 2. Time management improvements
 3. Consistency and habit building
 4. Energy optimization strategies
+ 5. If completion speed is significantly better at a specific hour, recommend moving or adding a High energy block to cover that hour (justify briefly). If throughput is higher at a different hour, mention it as an alternative.
 
 Format as a JSON array of strings, each recommendation should be 1-2 sentences and actionable.`;
 
@@ -347,4 +453,58 @@ function generateRuleBasedSuggestions(userData: UserDataSummary): string[] {
   }
 
   return suggestions.slice(0, 6);
+}
+
+// Motivational message generators
+async function generateMotivationalMessage(userData: UserDataSummary): Promise<string> {
+  const prompt = `Write a single short motivational line (max 18 words) tailored to the user's current energy context.
+
+Context:
+- Fastest completion hour: ${userData.completionVelocity.fastestHour ?? 'n/a'} (avg ${Math.round(userData.completionVelocity.fastestAvg || 0)}m)
+- Current High block: ${userData.highBlock ? `${userData.highBlock.start}–${userData.highBlock.end}` : 'n/a'}
+- Last week sessions: ${userData.recentTrends.lastWeekSessions}
+- Focus time last week (hours): ${Math.round(userData.recentTrends.lastWeekFocusTime / 3600)}
+
+Tone: supportive, concise, energetic. Avoid emojis.`;
+
+  const completion = await openai.chat.completions.create({
+    model: 'gpt-3.5-turbo',
+    messages: [
+      { role: 'system', content: 'Return only the line, no quotes.' },
+      { role: 'user', content: prompt }
+    ],
+    temperature: 0.8,
+    max_tokens: 40
+  });
+  return completion.choices[0]?.message?.content?.trim() || 'Let’s make steady progress right now.';
+}
+
+function generateRuleBasedMotivation(userData: UserDataSummary): string {
+  if (userData.completionVelocity.fastestHour !== undefined) {
+    return `Lean into your ${userData.completionVelocity.fastestHour}:00 momentum—keep the streak alive.`;
+  }
+  if (userData.recentTrends.lastWeekSessions > 0) {
+    return 'Consistency compounds—today’s focus moves the needle.';
+  }
+  return 'Start small, finish strong.';
+}
+
+// Create concrete schedule change proposals based on focus velocity
+function generateScheduleProposals(userData: UserDataSummary): Proposal[] {
+  const proposals: Proposal[] = [];
+  const fastestHour = userData.completionVelocity.fastestHour;
+  if (typeof fastestHour === 'number') {
+    // Propose a 2-hour High block centered on fastestHour when meaningful
+    const startHour = Math.max(0, fastestHour - 1);
+    const endHour = Math.min(23, fastestHour + 1);
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const start = `${pad(startHour)}:00`;
+    const end = `${pad(endHour)}:00`;
+    proposals.push({
+      type: 'shift_high_block',
+      target: { start, end },
+      rationale: `Your fastest completion window is around ${pad(fastestHour)}:00; shifting High energy block to ${start}–${end} may improve throughput.`
+    });
+  }
+  return proposals;
 }
