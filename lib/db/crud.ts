@@ -75,12 +75,15 @@ export async function createSession(
   const supabase = getSupabaseFromRequest(req);
   const { data, error } = await supabase
     .from('sessions')
-    .insert([
-      {
-        schedule_id: input.schedule_id,
-        template_id: input.template_id
-      }
-    ])
+    .upsert(
+      [
+        {
+          schedule_id: input.schedule_id,
+          template_id: input.template_id
+        }
+      ],
+      { onConflict: 'schedule_id,template_id' }
+    )
     .select()
     .single();
   if (error) throw error;

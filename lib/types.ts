@@ -94,4 +94,10 @@ export interface ApiResponse<T = unknown> {
 
 export interface InsightsResponse {
   suggestions: string[];
+  proposals?: Array<{
+    type: 'shift_high_block';
+    target: { start: string; end: string };
+    rationale: string;
+  }>;
+  motivation?: string;
 }
