@@ -11,6 +11,7 @@
 'use client';
 
 import Link from 'next/link';
+import OrbitalThirdsLogo from './OrbitalThirdsLogo';
 
 export default function Footer() {
   return (
@@ -19,9 +20,7 @@ export default function Footer() {
         <div className="flex flex-col md:flex-row justify-between items-center">
           {/* Logo and tagline */}
           <div className="flex items-center space-x-2 mb-4 md:mb-0">
-            <div className="w-6 h-6 bg-gradient-to-br from-orange-400 to-blue-600 rounded-lg flex items-center justify-center">
-              <span className="text-white font-bold text-xs">T</span>
-            </div>
+            <OrbitalThirdsLogo size={24} variant="icon" theme="light" />
             <span className="text-sm text-gray-600">
               Structure your day around your energy.
             </span>
