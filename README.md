@@ -1,12 +1,12 @@
 # Thirds - Structure your day around your energy
 
-	Many people chase productivity through rigid timers and endless to-do lists, but these tools ignore a key factor — Energy. As the day progresses our energy naturally fluctuates. Our web app, "Thirds," helps users structure their day around their personal energy rhythm instead of the clock. By organizing their day into three customizable time blocks — High, Medium and Low Energy — users can align their most demanding tasks with their natural peaks and give themselves grace during low-energy hours.
+Many people chase productivity through rigid timers and endless to-do lists, but these tools ignore a key factor — Energy. As the day progresses our energy naturally fluctuates. Our web app, "Thirds," helps users structure their day around their personal energy rhythm instead of the clock. By organizing their day into three customizable time blocks — High, Medium and Low Energy — users can align their most demanding tasks with their natural peaks and give themselves grace during low-energy hours.
 	
-	Our Minimum Viable Product (MVP) delivers an adaptive daily dashboard that visualizes these "thirds," tracks focus in real-time, and uses AI to recommend smarter break times and schedule adjustments based on user performance. Technically, the app is built using Next.js, React, Supabase, and Tailwind CSS, to ensure both responsiveness and a clean, accessible user experience. 
+Our Minimum Viable Product (MVP) delivers an adaptive daily dashboard that visualizes these "thirds," tracks focus in real-time, and uses AI to recommend smarter break times and schedule adjustments based on user performance. Technically, the app is built using Next.js, React, Supabase, and Tailwind CSS, to ensure both responsiveness and a clean, accessible user experience. 
 	
-	Beyond just productivity, "Thirds" is a self-study tool, in that it helps users learn how their energy flows throughout the day so they can design routines that actually work for them. Whether you thrive at sunrise, midday, or midnight, "Thirds" adapts to you. Our innovative approach not only supports mental well-being and sustainable focus, but also redefines what it means to be productive.
+Beyond just productivity, "Thirds" is a self-study tool, in that it helps users learn how their energy flows throughout the day so they can design routines that actually work for them. Whether you thrive at sunrise, midday, or midnight, "Thirds" adapts to you. Our innovative approach not only supports mental well-being and sustainable focus, but also redefines what it means to be productive.
 	
-	We aimed to combine thoughtful design, smooth functionality, and data-driven insight, so "Thirds" offers a personalized way to stay on top of time, not by working harder, but by working with yourself.
+We aimed to combine thoughtful design, smooth functionality, and data-driven insight, so "Thirds" offers a personalized way to stay on top of time, not by working harder, but by working with yourself.
 
 ## 🚀 Features
 
