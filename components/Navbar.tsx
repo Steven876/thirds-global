@@ -64,9 +64,7 @@ export default function Navbar() {
           {/* User Profile Section */}
           <div className="flex items-center space-x-4">
             {/* TODO: Replace with actual user data from Supabase Auth */}
-            <div className="hidden sm:block text-sm text-gray-600">
-              Welcome back!
-            </div>
+            
             
             <Link
               href="/settings"
